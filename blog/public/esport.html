@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>patch-notes.fr/esport</title>
+    <meta name="description" content="Recaps courts, sources et liens utiles pour suivre l'actualite esport FR et internationale." />
+    <link rel="canonical" href="/esport" />
+    <link rel="alternate" type="application/rss+xml" title="patch-notes.fr / esport" href="/esport/feed.xml" />
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <div>
+        <p class="eyebrow"><a class="subtle-link" href="/">patch-notes.fr</a> / esport</p>
+        <h1>esport</h1>
+      </div>
+      <span id="status">chargement</span>
+    </header>
+
+    <main class="posts">
+      <label class="search-box">
+        <span>Recherche globale</span>
+        <input id="search" type="search" placeholder="Jeu, source, date, titre..." />
+      </label>
+      <section id="posts"></section>
+    </main>
+
+    <template id="post-template">
+      <article class="post">
+        <div class="post-meta"></div>
+        <h2></h2>
+        <p class="summary"></p>
+        <div class="split">
+          <section>
+            <h3>France</h3>
+            <ol class="articles fr-articles"></ol>
+          </section>
+          <section>
+            <h3>International</h3>
+            <ol class="articles intl-articles"></ol>
+          </section>
+        </div>
+        <a class="read-more" href="#">Voir le recap complet</a>
+      </article>
+    </template>
+
+    <script src="/app.js"></script>
+    <footer class="site-footer">
+      <a href="/mentions-legales">Mentions legales</a>
+      <a href="/confidentialite">Confidentialite</a>
+      <a href="/conditions">Conditions</a>
+    </footer>
+  </body>
+</html>

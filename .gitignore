@@ -1,0 +1,8 @@
+.env
+n8n_data/
+postgres_data/
+node_modules/
+blog/data/*.json
+!blog/data/.gitkeep
+temp-*.js
+*.log
