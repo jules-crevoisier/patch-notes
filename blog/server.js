@@ -221,18 +221,6 @@ Sitemap: ${SITE_URL}/sitemap.xml
       return;
     }
 
-    const feedMatch = url.pathname.match(/^\/([a-z0-9-]+)\/feed\.xml$/);
-    if (req.method === "GET" && feedMatch) {
-      send(res, 200, await renderFeed(feedMatch[1]), contentTypes[".xml"]);
-      return;
-    }
-
-    if (req.method === "GET" && isPublicTopicPath(url.pathname)) {
-      const body = await fs.readFile(path.join(PUBLIC_DIR, "esport.html"));
-      send(res, 200, body, contentTypes[".html"]);
-      return;
-    }
-
     const legalPages = {
       "/mentions-legales": "mentions-legales.html",
       "/confidentialite": "confidentialite.html",
@@ -241,6 +229,18 @@ Sitemap: ${SITE_URL}/sitemap.xml
 
     if (req.method === "GET" && legalPages[url.pathname]) {
       const body = await fs.readFile(path.join(PUBLIC_DIR, legalPages[url.pathname]));
+      send(res, 200, body, contentTypes[".html"]);
+      return;
+    }
+
+    const feedMatch = url.pathname.match(/^\/([a-z0-9-]+)\/feed\.xml$/);
+    if (req.method === "GET" && feedMatch) {
+      send(res, 200, await renderFeed(feedMatch[1]), contentTypes[".xml"]);
+      return;
+    }
+
+    if (req.method === "GET" && isPublicTopicPath(url.pathname)) {
+      const body = await fs.readFile(path.join(PUBLIC_DIR, "esport.html"));
       send(res, 200, body, contentTypes[".html"]);
       return;
     }
