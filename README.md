@@ -37,6 +37,7 @@ Variables importantes:
 - `GEMINI_MODEL` : modèle utilisé, par défaut `gemini-2.5-flash`.
 - `SITE_URL` : URL publique du site, par exemple `https://patch-notes.fr`.
 - `N8N_ENCRYPTION_KEY` : clé stable pour chiffrer les credentials n8n.
+- `N8N_PROXY_HOPS` : mettre `1` quand n8n est derrière Apache, Nginx ou Caddy.
 
 ## Ajouter un sujet
 
