@@ -314,7 +314,7 @@ async function renderHubPage() {
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>patch-notes.fr</title>
     <meta name="description" content="Hub de veille par sujet avec recaps courts, sources et liens utiles." />
-    <link rel="canonical" href="/" />
+    <link rel="canonical" href="${escapeHtml(`${SITE_URL}/`)}" />
     <link rel="icon" href="/favicon.ico" sizes="any" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/styles.css" />
@@ -451,7 +451,7 @@ async function renderTopicPage(topic) {
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>${escapeHtml(title)}</title>
     <meta name="description" content="${escapeHtml(description)}" />
-    <link rel="canonical" href="/${escapeHtml(topic)}" />
+    <link rel="canonical" href="${escapeHtml(`${SITE_URL}/${topic}`)}" />
     <link rel="alternate" type="application/rss+xml" title="patch-notes.fr / ${escapeHtml(topic)}" href="/${escapeHtml(topic)}/feed.xml" />
     <link rel="icon" href="/favicon.ico" sizes="any" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
@@ -549,7 +549,7 @@ function renderRecapPage(post, topic) {
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>${escapeHtml(title)}</title>
     <meta name="description" content="${escapeHtml(description)}" />
-    <link rel="canonical" href="/${escapeHtml(topic)}/recap/${escapeHtml(encodeURIComponent(post.id))}" />
+    <link rel="canonical" href="${escapeHtml(canonicalUrl)}" />
     <link rel="icon" href="/favicon.ico" sizes="any" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/styles.css" />
