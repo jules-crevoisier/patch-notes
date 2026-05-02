@@ -2,8 +2,17 @@ const postsEl = document.querySelector("#posts");
 const statusEl = document.querySelector("#status");
 const searchEl = document.querySelector("#search");
 const template = document.querySelector("#post-template");
-let allPosts = [];
+const sentinelEl = document.querySelector("#load-more-sentinel");
 const currentTopic = location.pathname.split("/").filter(Boolean)[0] || "esport";
+const pageSize = 8;
+
+let allPosts = [];
+let offset = 0;
+let total = 0;
+let hasMore = true;
+let isLoading = false;
+let currentQuery = "";
+let renderDay = "";
 
 const formatter = new Intl.DateTimeFormat("fr-FR", {
   dateStyle: "full",
@@ -27,10 +36,6 @@ function normalize(value = "") {
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
-}
-
-function queryTokens(query) {
-  return normalize(query).split(" ").filter(Boolean);
 }
 
 function articleTime(article) {
@@ -66,7 +71,7 @@ function dayLabel(post) {
   return new Intl.DateTimeFormat("fr-FR", { dateStyle: "full" }).format(new Date(post.createdAt || Date.now()));
 }
 
-function isDisplayableEsportArticle(article) {
+function isDisplayableArticle(article) {
   const text = `${article.title || ""} ${article.snippet || ""}`.toLowerCase();
   const negative = [
     "how to complete",
@@ -86,27 +91,6 @@ function isDisplayableEsportArticle(article) {
   return !negative.some((term) => text.includes(term));
 }
 
-function searchableText(post) {
-  return normalize([
-    post.title,
-    post.summary,
-    post.topic,
-    post.id,
-    post.createdAt,
-    formatter.format(new Date(post.createdAt || Date.now())),
-    ...(post.articles || []).flatMap((article) => [
-      article.title,
-      article.source,
-      article.region,
-      article.url,
-      article.snippet,
-      article.publishedAt,
-      articleTime(article),
-    ]),
-  ]
-    .join(" "));
-}
-
 function articleSearchText(article) {
   return normalize([
     article.title,
@@ -117,10 +101,6 @@ function articleSearchText(article) {
     article.publishedAt,
     articleTime(article),
   ].join(" "));
-}
-
-function matchesTokens(text, tokens) {
-  return tokens.every((token) => text.includes(token));
 }
 
 function appendArticle(target, article) {
@@ -158,76 +138,135 @@ function appendLimited(target, articles) {
   }
 }
 
-function renderPosts() {
-  const tokens = queryTokens(searchEl.value);
-  const posts = tokens.length ? allPosts.filter((post) => matchesTokens(searchableText(post), tokens)) : allPosts;
-  postsEl.textContent = "";
+function appendPost(post) {
+  const key = dayKey(post);
+  if (key !== renderDay) {
+    renderDay = key;
+    const sectionTitle = document.createElement("h2");
+    sectionTitle.className = "day-heading";
+    sectionTitle.textContent = dayLabel(post);
+    postsEl.append(sectionTitle);
+  }
 
-  if (!posts.length) {
-    const empty = document.createElement("p");
-    empty.className = "empty";
-    empty.textContent = tokens.length ? "Aucun recap ne correspond a cette recherche." : "Aucun recap pour le moment. Lance le workflow n8n pour publier le premier.";
-    postsEl.append(empty);
-    statusEl.textContent = "0 recap";
+  const node = template.content.cloneNode(true);
+  const createdAt = post.createdAt ? new Date(post.createdAt) : new Date();
+  const visibleArticles = (post.articles || []).filter(isDisplayableArticle);
+  const queryTokens = normalize(currentQuery).split(" ").filter(Boolean);
+  const matchingArticles = queryTokens.length
+    ? visibleArticles.filter((article) => queryTokens.every((token) => articleSearchText(article).includes(token)))
+    : visibleArticles;
+  const articlesToShow = queryTokens.length && !matchingArticles.length ? visibleArticles : matchingArticles;
+  const frArticles = articlesToShow.filter((article) => article.region === "fr");
+  const intlArticles = articlesToShow.filter((article) => article.region !== "fr");
+
+  node.querySelector(".post-meta").textContent = `${postSlot(post)} - ${formatter.format(createdAt)} - ${frArticles.length} FR / ${intlArticles.length} INT`;
+  node.querySelector("h2").textContent = post.title;
+  node.querySelector(".summary").textContent = post.summary;
+  node.querySelector(".read-more").href = `/${currentTopic}/recap/${encodeURIComponent(post.id)}`;
+
+  appendLimited(node.querySelector(".fr-articles"), frArticles);
+  appendLimited(node.querySelector(".intl-articles"), intlArticles);
+  postsEl.append(node);
+}
+
+function updateStatus() {
+  if (isLoading) {
+    statusEl.textContent = "chargement";
+    if (sentinelEl) sentinelEl.textContent = "Chargement...";
     return;
   }
 
-  let currentDay = "";
-  for (const post of posts) {
-    const key = dayKey(post);
-    if (key !== currentDay) {
-      currentDay = key;
-      const sectionTitle = document.createElement("h2");
-      sectionTitle.className = "day-heading";
-      sectionTitle.textContent = dayLabel(post);
-      postsEl.append(sectionTitle);
-    }
-
-    const node = template.content.cloneNode(true);
-    const createdAt = post.createdAt ? new Date(post.createdAt) : new Date();
-    const visibleArticles = (post.articles || []).filter(isDisplayableEsportArticle);
-    const matchingArticles = tokens.length
-      ? visibleArticles.filter((article) => matchesTokens(articleSearchText(article), tokens))
-      : visibleArticles;
-    const articlesToShow = tokens.length && !matchingArticles.length ? visibleArticles : matchingArticles;
-    const frArticles = articlesToShow.filter((article) => article.region === "fr");
-    const intlArticles = articlesToShow.filter((article) => article.region !== "fr");
-
-    node.querySelector(".post-meta").textContent = `${postSlot(post)} - ${formatter.format(createdAt)} - ${frArticles.length} FR / ${intlArticles.length} INT`;
-    node.querySelector("h2").textContent = post.title;
-    node.querySelector(".summary").textContent = post.summary;
-    node.querySelector(".read-more").href = `/esport/recap/${encodeURIComponent(post.id)}`;
-
-    appendLimited(node.querySelector(".fr-articles"), frArticles);
-    appendLimited(node.querySelector(".intl-articles"), intlArticles);
-    postsEl.append(node);
-  }
-
-  if (tokens.length) {
-    const visibleMatches = posts.reduce((count, post) => {
-      const visibleArticles = (post.articles || []).filter(isDisplayableEsportArticle);
-      return count + visibleArticles.filter((article) => matchesTokens(articleSearchText(article), tokens)).length;
-    }, 0);
-    statusEl.textContent = `${visibleMatches} article${visibleMatches > 1 ? "s" : ""}`;
-  } else {
-    statusEl.textContent = `${posts.length} recap${posts.length > 1 ? "s" : ""}`;
+  statusEl.textContent = `${total} recap${total > 1 ? "s" : ""}`;
+  if (sentinelEl) {
+    sentinelEl.textContent = hasMore ? "Chargement..." : "";
+    sentinelEl.dataset.hasMore = hasMore ? "true" : "false";
   }
 }
 
-fetch("/posts.json", { cache: "no-store" })
-  .then((response) => response.json())
-  .then((posts) => {
-    allPosts = posts.filter((post) => (post.topic || "esport") === currentTopic && (post.articles || []).length > 0);
-    document.title = `patch-notes.fr/${currentTopic}`;
-    const title = document.querySelector("h1");
-    const eyebrow = document.querySelector(".eyebrow");
-    if (title) title.textContent = currentTopic;
-    if (eyebrow) eyebrow.innerHTML = `<a class="subtle-link" href="/">patch-notes.fr</a> / ${currentTopic}`;
-    renderPosts();
-  })
-  .catch(() => {
-    statusEl.textContent = "erreur";
-    postsEl.innerHTML = '<p class="empty">Impossible de charger les recaps.</p>';
-  });
+function resetList() {
+  allPosts = [];
+  offset = 0;
+  total = 0;
+  hasMore = true;
+  renderDay = "";
+  postsEl.textContent = "";
+}
 
-searchEl.addEventListener("input", renderPosts);
+function renderEmptyIfNeeded() {
+  if (allPosts.length || isLoading) return;
+  const empty = document.createElement("p");
+  empty.className = "empty";
+  empty.textContent = currentQuery ? "Aucun recap ne correspond a cette recherche." : "Aucun recap pour le moment. Lance le workflow n8n pour publier le premier.";
+  postsEl.append(empty);
+}
+
+async function loadMore({ reset = false } = {}) {
+  if (isLoading || (!hasMore && !reset)) return;
+  if (reset) resetList();
+
+  isLoading = true;
+  updateStatus();
+
+  try {
+    const params = new URLSearchParams({
+      offset: String(offset),
+      limit: String(pageSize),
+    });
+    if (currentQuery) params.set("q", currentQuery);
+
+    const response = await fetch(`/api/topics/${currentTopic}/posts?${params}`, { cache: "no-store" });
+    if (!response.ok) throw new Error("load failed");
+
+    const page = await response.json();
+    total = page.total || 0;
+    hasMore = Boolean(page.hasMore);
+    offset = page.nextOffset || offset + pageSize;
+    allPosts.push(...page.posts);
+
+    for (const post of page.posts) appendPost(post);
+    renderEmptyIfNeeded();
+  } catch {
+    if (!allPosts.length) {
+      postsEl.innerHTML = '<p class="empty">Impossible de charger les recaps.</p>';
+    }
+    hasMore = false;
+  } finally {
+    isLoading = false;
+    updateStatus();
+  }
+}
+
+function debounce(fn, delay = 250) {
+  let timer;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), delay);
+  };
+}
+
+const onSearch = debounce(() => {
+  currentQuery = searchEl.value.trim();
+  loadMore({ reset: true });
+});
+
+document.title = `patch-notes.fr/${currentTopic}`;
+const title = document.querySelector("h1");
+const eyebrow = document.querySelector(".eyebrow");
+if (title) title.textContent = currentTopic;
+if (eyebrow) eyebrow.innerHTML = `<a class="subtle-link" href="/">patch-notes.fr</a> / ${currentTopic}`;
+
+searchEl.addEventListener("input", onSearch);
+
+if ("IntersectionObserver" in window && sentinelEl) {
+  const observer = new IntersectionObserver((entries) => {
+    if (entries.some((entry) => entry.isIntersecting)) loadMore();
+  }, { rootMargin: "500px 0px" });
+  observer.observe(sentinelEl);
+} else {
+  window.addEventListener("scroll", () => {
+    const nearBottom = window.innerHeight + window.scrollY >= document.body.offsetHeight - 600;
+    if (nearBottom) loadMore();
+  }, { passive: true });
+}
+
+loadMore({ reset: true });

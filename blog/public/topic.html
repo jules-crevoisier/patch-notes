@@ -3,10 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>patch-notes.fr/esport</title>
-    <meta name="description" content="Recaps courts, sources et liens utiles pour suivre l'actualite esport FR et internationale." />
+    <title>patch-notes.fr/topic</title>
+    <meta name="description" content="Recaps courts, sources et liens utiles pour suivre l'actualite par sujet." />
     <link rel="canonical" href="/esport" />
-    <link rel="alternate" type="application/rss+xml" title="patch-notes.fr / esport" href="/esport/feed.xml" />
+    <link rel="alternate" type="application/rss+xml" title="patch-notes.fr / topic" href="/esport/feed.xml" />
     <link rel="icon" href="/favicon.ico" sizes="any" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/styles.css" />
@@ -14,8 +14,8 @@
   <body>
     <header class="site-header">
       <div>
-        <p class="eyebrow"><a class="subtle-link" href="/">patch-notes.fr</a> / esport</p>
-        <h1>esport</h1>
+        <p class="eyebrow"><a class="subtle-link" href="/">patch-notes.fr</a> / topic</p>
+        <h1>topic</h1>
       </div>
       <nav class="site-header-actions" aria-label="Navigation">
         <a class="header-about-link" href="/a-propos">Mais c'est quoi ce site&nbsp;?</a>
@@ -29,6 +29,7 @@
         <input id="search" type="search" placeholder="Jeu, source, date, titre..." />
       </label>
       <section id="posts"></section>
+      <div id="load-more-sentinel" class="load-more-sentinel" data-has-more="true">Chargement...</div>
     </main>
 
     <template id="post-template">

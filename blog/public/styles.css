@@ -257,6 +257,18 @@ h3 {
   text-underline-offset: 3px;
 }
 
+.load-more-sentinel {
+  min-height: 42px;
+  padding: 22px 0 4px;
+  color: var(--muted);
+  font-size: 14px;
+  text-align: center;
+}
+
+.load-more-sentinel[data-has-more="false"] {
+  display: none;
+}
+
 .hub-intro {
   padding: 8px 0 12px;
 }
