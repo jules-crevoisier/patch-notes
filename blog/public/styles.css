@@ -29,6 +29,26 @@ body {
   border-bottom: 1px solid var(--line);
 }
 
+.site-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 16px 22px;
+}
+
+.header-about-link {
+  color: var(--muted);
+  font-size: 14px;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+.header-about-link:hover {
+  color: var(--ink);
+}
+
 .site-footer {
   display: flex;
   flex-wrap: wrap;
@@ -304,6 +324,11 @@ h3 {
   .site-header {
     align-items: start;
     flex-direction: column;
+  }
+
+  .site-header-actions {
+    width: 100%;
+    justify-content: flex-start;
   }
 
   #status {

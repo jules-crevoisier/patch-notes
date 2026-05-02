@@ -20,6 +20,13 @@ const contentTypes = {
   ".xml": "application/xml; charset=utf-8",
 };
 
+const reservedPublicPaths = new Set([
+  "a-propos",
+  "conditions",
+  "confidentialite",
+  "mentions-legales",
+]);
+
 async function ensurePostsFile() {
   await fs.mkdir(DATA_DIR, { recursive: true });
   try {
@@ -124,7 +131,8 @@ function topicLabel(topic) {
 }
 
 function isPublicTopicPath(pathname) {
-  return /^\/[a-z0-9-]+\/?$/.test(pathname) && !pathname.startsWith("/api");
+  const slug = pathname.replace(/^\/|\/$/g, "");
+  return /^\/[a-z0-9-]+\/?$/.test(pathname) && !pathname.startsWith("/api") && !reservedPublicPaths.has(slug);
 }
 
 async function renderSitemap() {
@@ -221,14 +229,16 @@ Sitemap: ${SITE_URL}/sitemap.xml
       return;
     }
 
-    const legalPages = {
+    const staticPages = {
       "/mentions-legales": "mentions-legales.html",
       "/confidentialite": "confidentialite.html",
       "/conditions": "conditions.html",
+      "/a-propos": "a-propos.html",
     };
+    const staticPagePath = url.pathname.replace(/\/$/, "") || "/";
 
-    if (req.method === "GET" && legalPages[url.pathname]) {
-      const body = await fs.readFile(path.join(PUBLIC_DIR, legalPages[url.pathname]));
+    if (req.method === "GET" && staticPages[staticPagePath]) {
+      const body = await fs.readFile(path.join(PUBLIC_DIR, staticPages[staticPagePath]));
       send(res, 200, body, contentTypes[".html"]);
       return;
     }
