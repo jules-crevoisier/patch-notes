@@ -21,6 +21,26 @@ const base = $items('Assembler recap')[0].json;
 const gemini = $input.first().json;
 const post = { ...base.postBase };
 
+function cleanZeroRegionSummary(summary, post) {
+  const text = String(summary || '').trim();
+  const frCount = post.articles?.filter((article) => article.region === 'fr').length || 0;
+  const intlCount = post.articles?.filter((article) => article.region !== 'fr').length || 0;
+  if (!text || (frCount && intlCount)) return text;
+
+  const total = frCount + intlCount;
+  const titles = (post.articles || [])
+    .slice(0, 4)
+    .map((article) => article.title)
+    .filter(Boolean)
+    .join('; ');
+
+  if (/International:\s*0\b/i.test(text) || /France:\s*0\b/i.test(text)) {
+    return `Articles: ${total} article${total > 1 ? 's' : ''} retenu${total > 1 ? 's' : ''}. A suivre: ${titles || 'pas de signal fort'}.`;
+  }
+
+  return text;
+}
+
 if (!post.articles?.length) {
   post.title = base.fallbackTitle;
   post.summary = base.fallbackSummary;
@@ -33,7 +53,7 @@ if (parsed?.title || parsed?.summary) {
   const generatedTitle = String(parsed.title || base.fallbackTitle).trim();
   const withSlot = generatedTitle.startsWith(`${post.slot} - `) ? generatedTitle : `${post.slot} - ${generatedTitle}`;
   post.title = withSlot.includes(base.recapDate) ? withSlot : `${withSlot} - ${base.recapDate}`;
-  post.summary = String(parsed.summary || base.fallbackSummary).trim();
+  post.summary = cleanZeroRegionSummary(parsed.summary || base.fallbackSummary, post);
 } else if (gemini?.error?.message) {
   post.errors = [...(post.errors || []), `Gemini: ${gemini.error.message}`];
 }

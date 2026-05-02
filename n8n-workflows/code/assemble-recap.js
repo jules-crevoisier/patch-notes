@@ -333,6 +333,7 @@ Contraintes:
 - Si la liste Articles est vide, retourne exactement le titre "${fallbackTitle}" et le summary "${fallbackSummary}", sans ajouter de sujet.
 - Ne parle que du sujet "${topic.label}".
 ${regionInstruction}
+- Si une seule categorie contient des articles, n'ecris jamais "France: 0", "International: 0", "0 article" ou une categorie vide dans le summary.
 - Reste factuel, sans inventer.
 ${topicFilter(topic.slug).promptExtra}
 

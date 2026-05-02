@@ -133,12 +133,16 @@ function escapeXml(value = "") {
 }
 
 function topicLabel(topic) {
-  const labels = {
-    esport: "Esport",
-    gaming: "Gaming",
-    tech: "Tech",
-  };
-  return labels[topic] || topic.replace(/-/g, " ");
+  const acronyms = new Set(["ai", "api", "ia", "seo", "tv", "vr"]);
+  return String(topic || "")
+    .split("-")
+    .filter(Boolean)
+    .map((part) => {
+      const lower = part.toLowerCase();
+      if (acronyms.has(lower)) return lower.toUpperCase();
+      return `${lower.charAt(0).toUpperCase()}${lower.slice(1)}`;
+    })
+    .join(" / ");
 }
 
 function articleTime(article) {
