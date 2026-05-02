@@ -394,6 +394,33 @@ function renderArticleList(articles, limit = Infinity) {
   }).join("\n");
 }
 
+function articleCountLabel(frArticles, intlArticles) {
+  if (frArticles.length && intlArticles.length) return `${frArticles.length} FR / ${intlArticles.length} INT`;
+  const total = frArticles.length + intlArticles.length;
+  return `${total} article${total > 1 ? "s" : ""}`;
+}
+
+function renderArticleSections(frArticles, intlArticles, limit = Infinity) {
+  if (frArticles.length && intlArticles.length) {
+    return `<div class="split">
+      <section>
+        <h3>France</h3>
+        <ol class="articles fr-articles">${renderArticleList(frArticles, limit)}</ol>
+      </section>
+      <section>
+        <h3>International</h3>
+        <ol class="articles intl-articles">${renderArticleList(intlArticles, limit)}</ol>
+      </section>
+    </div>`;
+  }
+
+  const articles = frArticles.length ? frArticles : intlArticles;
+  return `<section>
+    <h3>Articles</h3>
+    <ol class="articles">${renderArticleList(articles, limit)}</ol>
+  </section>`;
+}
+
 function renderTopicPostCard(post, topic) {
   const visibleArticles = (post.articles || []).filter(isDisplayableArticle);
   const frArticles = visibleArticles.filter((article) => article.region === "fr");
@@ -401,19 +428,10 @@ function renderTopicPostCard(post, topic) {
   const createdAt = new Date(post.createdAt || Date.now());
 
   return `<article class="post">
-    <div class="post-meta">${escapeHtml(postSlot(post))} - ${escapeHtml(new Intl.DateTimeFormat("fr-FR", { dateStyle: "full", timeStyle: "short" }).format(createdAt))} - ${frArticles.length} FR / ${intlArticles.length} INT</div>
+    <div class="post-meta">${escapeHtml(postSlot(post))} - ${escapeHtml(new Intl.DateTimeFormat("fr-FR", { dateStyle: "full", timeStyle: "short" }).format(createdAt))} - ${escapeHtml(articleCountLabel(frArticles, intlArticles))}</div>
     <h2>${escapeHtml(post.title)}</h2>
     <p class="summary">${escapeHtml(post.summary)}</p>
-    <div class="split">
-      <section>
-        <h3>France</h3>
-        <ol class="articles fr-articles">${renderArticleList(frArticles, 8)}</ol>
-      </section>
-      <section>
-        <h3>International</h3>
-        <ol class="articles intl-articles">${renderArticleList(intlArticles, 8)}</ol>
-      </section>
-    </div>
+    ${renderArticleSections(frArticles, intlArticles, 8)}
     <a class="read-more" href="/${encodeURIComponent(topic)}/recap/${encodeURIComponent(post.id)}">Voir le recap complet</a>
   </article>`;
 }
@@ -578,10 +596,7 @@ function renderRecapPage(post, topic) {
           <div class="post-meta">${escapeHtml(topic)} - ${escapeHtml(new Intl.DateTimeFormat("fr-FR", { dateStyle: "full", timeStyle: "short" }).format(createdAt))}</div>
           <h2>${escapeHtml(post.title)}</h2>
           <p class="summary">${escapeHtml(post.summary || "")}</p>
-          <h3>France</h3>
-          <ol class="articles fr-articles">${renderArticleList(frArticles)}</ol>
-          <h3>International</h3>
-          <ol class="articles intl-articles">${renderArticleList(intlArticles)}</ol>
+          ${renderArticleSections(frArticles, intlArticles)}
         </article>
       </section>
     </main>

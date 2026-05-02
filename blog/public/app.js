@@ -138,6 +138,31 @@ function appendLimited(target, articles) {
   }
 }
 
+function articleCountLabel(frArticles, intlArticles) {
+  if (frArticles.length && intlArticles.length) return `${frArticles.length} FR / ${intlArticles.length} INT`;
+  const total = frArticles.length + intlArticles.length;
+  return `${total} article${total > 1 ? "s" : ""}`;
+}
+
+function fillArticleSections(node, frArticles, intlArticles) {
+  const split = node.querySelector(".split");
+
+  if (frArticles.length && intlArticles.length) {
+    appendLimited(node.querySelector(".fr-articles"), frArticles);
+    appendLimited(node.querySelector(".intl-articles"), intlArticles);
+    return;
+  }
+
+  const articles = frArticles.length ? frArticles : intlArticles;
+  split.innerHTML = `
+    <section>
+      <h3>Articles</h3>
+      <ol class="articles all-articles"></ol>
+    </section>
+  `;
+  appendLimited(split.querySelector(".all-articles"), articles);
+}
+
 function appendPost(post) {
   const key = dayKey(post);
   if (key !== renderDay) {
@@ -159,13 +184,12 @@ function appendPost(post) {
   const frArticles = articlesToShow.filter((article) => article.region === "fr");
   const intlArticles = articlesToShow.filter((article) => article.region !== "fr");
 
-  node.querySelector(".post-meta").textContent = `${postSlot(post)} - ${formatter.format(createdAt)} - ${frArticles.length} FR / ${intlArticles.length} INT`;
+  node.querySelector(".post-meta").textContent = `${postSlot(post)} - ${formatter.format(createdAt)} - ${articleCountLabel(frArticles, intlArticles)}`;
   node.querySelector("h2").textContent = post.title;
   node.querySelector(".summary").textContent = post.summary;
   node.querySelector(".read-more").href = `/${currentTopic}/recap/${encodeURIComponent(post.id)}`;
 
-  appendLimited(node.querySelector(".fr-articles"), frArticles);
-  appendLimited(node.querySelector(".intl-articles"), intlArticles);
+  fillArticleSections(node, frArticles, intlArticles);
   postsEl.append(node);
 }
 

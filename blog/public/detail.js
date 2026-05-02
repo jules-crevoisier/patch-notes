@@ -53,7 +53,7 @@ function matches(article, query) {
   return tokens.every((token) => haystack.includes(token));
 }
 
-function isDisplayableEsportArticle(article) {
+function isDisplayableArticle(article) {
   const text = `${article.title || ""} ${article.snippet || ""}`.toLowerCase();
   const negative = [
     "how to complete",
@@ -77,10 +77,21 @@ function renderPost() {
   if (!currentPost) return;
   const query = searchEl.value.trim();
   const articles = (currentPost.articles || [])
-    .filter(isDisplayableEsportArticle)
+    .filter(isDisplayableArticle)
     .filter((article) => !query || matches(article, query));
   const frArticles = articles.filter((article) => article.region === "fr");
   const intlArticles = articles.filter((article) => article.region !== "fr");
+  const sectionHtml = frArticles.length && intlArticles.length
+    ? `
+      <h3>France</h3>
+      <ol class="articles fr-articles"></ol>
+      <h3>International</h3>
+      <ol class="articles intl-articles"></ol>
+    `
+    : `
+      <h3>Articles</h3>
+      <ol class="articles all-articles"></ol>
+    `;
 
   detailEl.textContent = "";
   const article = document.createElement("article");
@@ -89,14 +100,15 @@ function renderPost() {
     <div class="post-meta">${currentPost.topic || "esport"} - ${formatter.format(new Date(currentPost.createdAt))}</div>
     <h2>${currentPost.title}</h2>
     <p class="summary">${currentPost.summary}</p>
-    <h3>France</h3>
-    <ol class="articles fr-articles"></ol>
-    <h3>International</h3>
-    <ol class="articles intl-articles"></ol>
+    ${sectionHtml}
   `;
 
-  appendArticles(article.querySelector(".fr-articles"), frArticles);
-  appendArticles(article.querySelector(".intl-articles"), intlArticles);
+  if (frArticles.length && intlArticles.length) {
+    appendArticles(article.querySelector(".fr-articles"), frArticles);
+    appendArticles(article.querySelector(".intl-articles"), intlArticles);
+  } else {
+    appendArticles(article.querySelector(".all-articles"), frArticles.length ? frArticles : intlArticles);
+  }
   detailEl.append(article);
   statusEl.textContent = `${articles.length} article${articles.length > 1 ? "s" : ""}`;
 }
