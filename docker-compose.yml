@@ -1,3 +1,4 @@
+root@tuxpower:/srv/web/patch-notes# cat docker-compose.yml
 services:
   postgres:
     image: postgres:16-alpine
@@ -33,10 +34,10 @@ services:
       N8N_HOST: ${N8N_HOST}
       N8N_PORT: 5678
       N8N_PROTOCOL: ${N8N_PROTOCOL}
+      N8N_PROXY_HOPS: ${N8N_PROXY_HOPS:-1}
       WEBHOOK_URL: ${WEBHOOK_URL}
       GENERIC_TIMEZONE: ${GENERIC_TIMEZONE}
       TZ: ${TZ}
-      N8N_PROXY_HOPS: ${N8N_PROXY_HOPS:-1}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
       BLOG_SECRET: ${BLOG_SECRET:-dev-change-me}
