@@ -20,6 +20,11 @@ function pick(block, tag) {
   return decodeHtml(match?.[1] || '');
 }
 
+function pickLink(block) {
+  const href = block.match(/<link\b[^>]*\bhref=["']([^"']+)["'][^>]*\/?>/i)?.[1];
+  return decodeHtml(href || pick(block, 'link') || pick(block, 'guid') || pick(block, 'id'));
+}
+
 function stripGoogleSuffix(title, sourceName) {
   return title
     .replace(new RegExp(`\\s+-\\s+${sourceName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i'), '')
@@ -57,22 +62,44 @@ function isEsportArticle(article) {
 }
 
 function parseItems(xml, source) {
-  return [...String(xml || '').matchAll(/<item[\s\S]*?>([\s\S]*?)<\/item>/gi)]
+  const text = String(xml || '');
+  const matches = [
+    ...text.matchAll(/<item[\s\S]*?>([\s\S]*?)<\/item>/gi),
+    ...text.matchAll(/<entry[\s\S]*?>([\s\S]*?)<\/entry>/gi),
+  ];
+
+  return matches
     .map((match) => {
       const block = match[1];
       const rawTitle = pick(block, 'title');
       return {
         title: stripGoogleSuffix(rawTitle, source.name),
-        url: pick(block, 'link') || pick(block, 'guid'),
+        url: pickLink(block),
         source: source.name,
         region: source.region,
         method: source.method,
         publishedAt: pick(block, 'pubDate') || pick(block, 'updated') || pick(block, 'published'),
-        snippet: decodeHtml(pick(block, 'description') || pick(block, 'content:encoded')),
+        snippet: decodeHtml(pick(block, 'description') || pick(block, 'content:encoded') || pick(block, 'summary')),
       };
     })
     .filter((article) => article.title && article.url && isEsportArticle(article))
     .slice(0, source.max);
+}
+
+function resolveSource(item, index, preparedSources) {
+  const pairedIndex = Array.isArray(item.pairedItem)
+    ? item.pairedItem[0]?.item
+    : item.pairedItem?.item;
+  const prepared = preparedSources[pairedIndex ?? index]?.json || {};
+  return { ...prepared, ...item.json };
+}
+
+function extractXml(json) {
+  const candidates = [json.rss, json.data, json.body, json.response, json.text];
+  const value = candidates.find((candidate) => typeof candidate === 'string' && candidate.trim());
+  if (value) return value;
+  if (typeof json === 'string') return json;
+  return '';
 }
 
 function countBySource(list) {
@@ -109,8 +136,8 @@ const sameDayUrls = new Set(preparedSources[0]?.json?.sameDayUrls || []);
 const topic = preparedSources[0]?.json?.topic || { slug: 'esport', label: 'Esport' };
 
 for (const [index, item] of items.entries()) {
-  const source = { ...(preparedSources[index]?.json || {}), ...item.json };
-  const xml = source.rss || source.data || source.body || '';
+  const source = resolveSource(item, index, preparedSources);
+  const xml = extractXml(item.json);
   if (!xml || String(xml).length < 20) {
     errors.push(`${source.name}: reponse vide`);
     continue;
@@ -121,15 +148,29 @@ for (const [index, item] of items.entries()) {
 }
 
 const seen = new Set();
-const articles = loadedArticles
-  .sort((a, b) => new Date(b.publishedAt || 0) - new Date(a.publishedAt || 0))
-  .filter((article) => {
-    const key = normalizeUrl(article.url);
-    if (!key || seen.has(key) || sameDayUrls.has(key)) return false;
-    seen.add(key);
-    return true;
-  })
-  .slice(0, 36);
+let skippedInvalidUrl = 0;
+let skippedDuplicate = 0;
+let skippedSameDay = 0;
+const articles = [];
+
+for (const article of loadedArticles.sort((a, b) => new Date(b.publishedAt || 0) - new Date(a.publishedAt || 0))) {
+  const key = normalizeUrl(article.url);
+  if (!key) {
+    skippedInvalidUrl++;
+    continue;
+  }
+  if (seen.has(key)) {
+    skippedDuplicate++;
+    continue;
+  }
+  seen.add(key);
+  if (sameDayUrls.has(key)) {
+    skippedSameDay++;
+    continue;
+  }
+  articles.push(article);
+  if (articles.length >= 36) break;
+}
 
 const frArticles = articles.filter((article) => article.region === 'fr').slice(0, 14);
 const intlArticles = articles.filter((article) => article.region !== 'fr').slice(0, 18);
@@ -144,6 +185,8 @@ const slot = recapSlot(now);
 const fallbackTitle = `${slot} - ${topic.label} FR + international - ${recapDate}`;
 const fallbackSummary = selectedArticles.length
   ? `France: ${frArticles.length} articles retenus. International: ${intlArticles.length} articles retenus. A suivre cote FR: ${frLead || 'pas de signal fort'}. Cote international: ${intlLead || 'pas de signal fort'}.${errorLine}`
+  : loadedArticles.length
+    ? `${loadedArticles.length} articles ${topic.label} trouves dans les flux, mais aucun nouvel article a publier: ${skippedSameDay} deja publies aujourd'hui, ${skippedDuplicate} doublons internes, ${skippedInvalidUrl} URL invalides.${errorLine}`
   : `Aucun nouvel article ${topic.label} a publier sur ce creneau.${errorLine}`;
 
 const articleLines = selectedArticles
@@ -199,6 +242,14 @@ return [{
       summary: fallbackSummary,
       sourceGroups,
       errors,
+      debug: {
+        loadedArticlesCount: loadedArticles.length,
+        uniqueArticlesBeforeSameDayFilter: seen.size,
+        skippedInvalidUrl,
+        skippedDuplicate,
+        skippedSameDay,
+        selectedArticlesCount: selectedArticles.length,
+      },
       articles: selectedArticles,
       createdAt: now.toISOString(),
     },
