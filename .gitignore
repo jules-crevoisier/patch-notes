@@ -1,4 +1,7 @@
 .env
+.env.*
+!.env.example
+!.env.production.example
 *.local
 node_modules/
 postgres_data/
@@ -7,3 +10,5 @@ blog/data/*.json
 !blog/data/.gitkeep
 *.log
 temp-*.js
+backups/
+
