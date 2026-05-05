@@ -1,14 +1,36 @@
+/**
+ * Serveur HTTP du hub patch-notes.fr.
+ *
+ * Sert:
+ *   - Les pages SSR (hub, sujet, recap, pages légales).
+ *   - L'API JSON consommée par le frontend et n8n.
+ *   - Le sitemap, les flux RSS et le robots.txt pour le SEO.
+ *
+ * Persistance: PostgreSQL via blog/db.js (cf. docker-compose).
+ *
+ * Note: les fichiers statiques sont servis depuis blog/public/.
+ * Le style visuel (CSS, layout) n'est pas modifié par cette refonte:
+ * seules la couche données et la couche SEO/HTML sont enrichies.
+ */
+
 const http = require("node:http");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 
+const db = require("./db");
+
 const PORT = Number(process.env.PORT || 3001);
 const BLOG_SECRET = process.env.BLOG_SECRET || "dev-change-me";
 const SITE_URL = (process.env.SITE_URL || "http://localhost:3001").replace(/\/$/, "");
+const SITE_NAME = process.env.SITE_NAME || "patch-notes.fr";
+const SITE_DESCRIPTION =
+  process.env.SITE_DESCRIPTION ||
+  "Hub d'actualité par sujet : récaps courts, sources et liens utiles, mis à jour plusieurs fois par jour.";
+const SITE_LOCALE = process.env.SITE_LOCALE || "fr_FR";
+const SITE_OG_IMAGE = process.env.SITE_OG_IMAGE || `${SITE_URL}/favicon.svg`;
+
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, "public");
-const DATA_DIR = path.join(ROOT, "data");
-const POSTS_FILE = path.join(DATA_DIR, "posts.json");
 const TOPIC_PAGE_SIZE = 8;
 
 const contentTypes = {
@@ -19,6 +41,7 @@ const contentTypes = {
   ".svg": "image/svg+xml",
   ".ico": "image/x-icon",
   ".xml": "application/xml; charset=utf-8",
+  ".txt": "text/plain; charset=utf-8",
 };
 
 const reservedPublicPaths = new Set([
@@ -28,15 +51,6 @@ const reservedPublicPaths = new Set([
   "mentions-legales",
 ]);
 
-async function ensurePostsFile() {
-  await fs.mkdir(DATA_DIR, { recursive: true });
-  try {
-    await fs.access(POSTS_FILE);
-  } catch {
-    await fs.writeFile(POSTS_FILE, "[]\n", "utf8");
-  }
-}
-
 async function readJsonBody(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
@@ -45,67 +59,11 @@ async function readJsonBody(req) {
   return JSON.parse(raw);
 }
 
-async function readPosts() {
-  await ensurePostsFile();
-  return JSON.parse(await fs.readFile(POSTS_FILE, "utf8"));
-}
-
-async function writePost(post) {
-  const posts = await readPosts();
-  const postDate = new Date(post.createdAt || Date.now()).toISOString().slice(0, 10);
-  const sameDayUrls = new Set(
-    posts
-      .filter((item) => item.id !== post.id && new Date(item.createdAt || 0).toISOString().slice(0, 10) === postDate)
-      .flatMap((item) => item.articles || [])
-      .map((article) => normalizeUrl(article.url)),
-  );
-  const uniqueArticles = [];
-  const seen = new Set();
-
-  for (const article of Array.isArray(post.articles) ? post.articles : []) {
-    const key = normalizeUrl(article.url);
-    if (!key || seen.has(key) || sameDayUrls.has(key)) continue;
-    seen.add(key);
-    uniqueArticles.push(article);
-  }
-
-  if (uniqueArticles.length === 0) {
-    return null;
-  }
-
-  const nextPost = {
-    id: post.id || new Date().toISOString(),
-    topic: post.topic || "esport",
-    title: post.title || "Recap esport",
-    summary: post.summary || "",
-    slot: post.slot || "",
-    articles: uniqueArticles,
-    sourceGroups: post.sourceGroups || {},
-    errors: Array.isArray(post.errors) ? post.errors : [],
-    createdAt: post.createdAt || new Date().toISOString(),
-  };
-
-  const withoutDuplicate = posts.filter((item) => item.id !== nextPost.id);
-  withoutDuplicate.unshift(nextPost);
-  await fs.writeFile(POSTS_FILE, `${JSON.stringify(withoutDuplicate.slice(0, 50), null, 2)}\n`, "utf8");
-  return nextPost;
-}
-
-function normalizeUrl(value) {
-  try {
-    const url = new URL(value);
-    url.hash = "";
-    url.search = "";
-    return url.toString().replace(/\/$/, "").toLowerCase();
-  } catch {
-    return "";
-  }
-}
-
-function send(res, status, body, type = "application/json; charset=utf-8") {
+function send(res, status, body, type = "application/json; charset=utf-8", extraHeaders = {}) {
   res.writeHead(status, {
     "content-type": type,
-    "cache-control": "no-store",
+    "cache-control": extraHeaders["cache-control"] || "no-store",
+    ...extraHeaders,
   });
   res.end(body);
 }
@@ -198,117 +156,150 @@ function isDisplayableArticle(article) {
   return !negative.some((term) => text.includes(term));
 }
 
-function normalizeSearch(value = "") {
-  return String(value)
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[’‘]/g, "'")
-    .replace(/[“”]/g, '"')
-    .replace(/&/g, " and ")
-    .replace(/[^a-z0-9]+/gi, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
-}
-
-function topicSearchText(post) {
-  return normalizeSearch([
-    post.title,
-    post.summary,
-    post.topic,
-    post.id,
-    post.createdAt,
-    ...(post.articles || []).flatMap((article) => [
-      article.title,
-      article.source,
-      article.region,
-      article.url,
-      article.snippet,
-      article.publishedAt,
-    ]),
-  ].join(" "));
-}
-
-async function getTopicPosts(topic, { offset = 0, limit = TOPIC_PAGE_SIZE, query = "" } = {}) {
-  const tokens = normalizeSearch(query).split(" ").filter(Boolean);
-  const all = (await readPosts())
-    .filter((post) => (post.topic || "esport") === topic && (post.articles || []).length > 0);
-  const filtered = tokens.length
-    ? all.filter((post) => {
-        const text = topicSearchText(post);
-        return tokens.every((token) => text.includes(token));
-      })
-    : all;
-  const safeOffset = Math.max(0, Number(offset) || 0);
-  const safeLimit = Math.min(30, Math.max(1, Number(limit) || TOPIC_PAGE_SIZE));
-
-  return {
-    posts: filtered.slice(safeOffset, safeOffset + safeLimit),
-    total: filtered.length,
-    offset: safeOffset,
-    limit: safeLimit,
-    nextOffset: safeOffset + safeLimit,
-    hasMore: safeOffset + safeLimit < filtered.length,
-  };
-}
-
 function isPublicTopicPath(pathname) {
   const slug = pathname.replace(/^\/|\/$/g, "");
   return /^\/[a-z0-9-]+\/?$/.test(pathname) && !pathname.startsWith("/api") && !reservedPublicPaths.has(slug);
 }
 
-async function renderSitemap() {
-  const posts = await readPosts();
-  const topics = [...new Set(["esport", ...posts.map((post) => post.topic || "esport")])];
-  const urls = [
-    { loc: `${SITE_URL}/`, changefreq: "daily", priority: "1.0" },
-    { loc: `${SITE_URL}/a-propos`, changefreq: "monthly", priority: "0.4" },
-    { loc: `${SITE_URL}/mentions-legales`, changefreq: "yearly", priority: "0.2" },
-    { loc: `${SITE_URL}/confidentialite`, changefreq: "yearly", priority: "0.2" },
-    { loc: `${SITE_URL}/conditions`, changefreq: "yearly", priority: "0.2" },
-    ...topics.map((topic) => ({ loc: `${SITE_URL}/${topic}`, changefreq: "hourly", priority: "0.9" })),
-    ...posts.map((post) => ({
-      loc: `${SITE_URL}/${post.topic || "esport"}/recap/${encodeURIComponent(post.id)}`,
-      lastmod: new Date(post.createdAt || Date.now()).toISOString(),
-      changefreq: "weekly",
-      priority: "0.7",
-    })),
-  ];
+function postMode(post) {
+  if (post.mode === "fr" || post.mode === "intl" || post.mode === "fr-intl") return post.mode;
+  return "fr-intl";
+}
 
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-${urls.map((url) => `  <url>
-    <loc>${escapeXml(url.loc)}</loc>${url.lastmod ? `
-    <lastmod>${url.lastmod}</lastmod>` : ""}
-    <changefreq>${url.changefreq}</changefreq>
-    <priority>${url.priority}</priority>
-  </url>`).join("\n")}
-</urlset>
-`;
+function partitionArticles(post) {
+  const visible = (post.articles || []).filter(isDisplayableArticle);
+  const fr = visible.filter((article) => article.region === "fr");
+  const intl = visible.filter((article) => article.region !== "fr");
+  return { visible, fr, intl };
+}
+
+function articleCountLabel(frArticles, intlArticles) {
+  if (frArticles.length && intlArticles.length) return `${frArticles.length} FR / ${intlArticles.length} INT`;
+  const total = frArticles.length + intlArticles.length;
+  return `${total} article${total > 1 ? "s" : ""}`;
+}
+
+function renderArticleList(articles, limit = Infinity) {
+  const visibleArticles = articles.slice(0, limit);
+  if (!visibleArticles.length) return '<li class="muted-row">Aucun article.</li>';
+
+  return visibleArticles
+    .map((article) => {
+      const snippet = article.snippet ? `<p class="article-snippet">${escapeHtml(article.snippet)}</p>` : "";
+      return `<li>
+      <span class="article-meta">${escapeHtml(articleLabel(article))}</span>
+      <a href="${escapeHtml(article.url)}" target="_blank" rel="noreferrer">${escapeHtml(article.title)}</a>
+      ${snippet}
+    </li>`;
+    })
+    .join("\n");
+}
+
+function renderArticleSections(post, limit = Infinity) {
+  const mode = postMode(post);
+  const { fr, intl } = partitionArticles(post);
+
+  if (mode === "fr-intl" && fr.length && intl.length) {
+    return `<div class="split">
+      <section>
+        <h3>France</h3>
+        <ol class="articles fr-articles">${renderArticleList(fr, limit)}</ol>
+      </section>
+      <section>
+        <h3>International</h3>
+        <ol class="articles intl-articles">${renderArticleList(intl, limit)}</ol>
+      </section>
+    </div>`;
+  }
+
+  const articles = mode === "intl" ? intl : mode === "fr" ? fr : [...fr, ...intl];
+  return `<section>
+    <h3>Articles</h3>
+    <ol class="articles">${renderArticleList(articles, limit)}</ol>
+  </section>`;
+}
+
+function renderTopicPostCard(post, topic) {
+  const { fr, intl } = partitionArticles(post);
+  const createdAt = new Date(post.createdAt || Date.now());
+
+  return `<article class="post">
+    <div class="post-meta">${escapeHtml(postSlot(post))} - ${escapeHtml(
+      new Intl.DateTimeFormat("fr-FR", { dateStyle: "full", timeStyle: "short" }).format(createdAt),
+    )} - ${escapeHtml(articleCountLabel(fr, intl))}</div>
+    <h2>${escapeHtml(post.title)}</h2>
+    <p class="summary">${escapeHtml(post.summary)}</p>
+    ${renderArticleSections(post, 8)}
+    <a class="read-more" href="/${encodeURIComponent(topic)}/recap/${encodeURIComponent(post.id)}">Voir le recap complet</a>
+  </article>`;
+}
+
+function metaTags({ title, description, canonical, ogType = "website", ogImage = SITE_OG_IMAGE, publishedTime, modifiedTime }) {
+  const tags = [
+    `<meta name="description" content="${escapeHtml(description)}" />`,
+    `<meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1" />`,
+    `<meta name="theme-color" content="#0a7a68" />`,
+    `<link rel="canonical" href="${escapeHtml(canonical)}" />`,
+    `<meta property="og:type" content="${escapeHtml(ogType)}" />`,
+    `<meta property="og:locale" content="${escapeHtml(SITE_LOCALE)}" />`,
+    `<meta property="og:site_name" content="${escapeHtml(SITE_NAME)}" />`,
+    `<meta property="og:title" content="${escapeHtml(title)}" />`,
+    `<meta property="og:description" content="${escapeHtml(description)}" />`,
+    `<meta property="og:url" content="${escapeHtml(canonical)}" />`,
+    `<meta property="og:image" content="${escapeHtml(ogImage)}" />`,
+    `<meta name="twitter:card" content="summary_large_image" />`,
+    `<meta name="twitter:title" content="${escapeHtml(title)}" />`,
+    `<meta name="twitter:description" content="${escapeHtml(description)}" />`,
+    `<meta name="twitter:image" content="${escapeHtml(ogImage)}" />`,
+  ];
+  if (publishedTime) tags.push(`<meta property="article:published_time" content="${escapeHtml(publishedTime)}" />`);
+  if (modifiedTime) tags.push(`<meta property="article:modified_time" content="${escapeHtml(modifiedTime)}" />`);
+  return tags.join("\n    ");
 }
 
 async function renderHubPage() {
-  const posts = await readPosts();
-  const topicCounts = posts.reduce((acc, post) => {
-    const topic = post.topic || "esport";
-    acc[topic] = (acc[topic] || 0) + 1;
-    return acc;
-  }, {});
-  const activeTopics = [...new Set(["esport", ...posts.map((post) => post.topic || "esport")])];
-  const cards = activeTopics.map((topic) => {
-    const label = topicLabel(topic);
-    return `<a class="topic-card" href="/${escapeHtml(topic)}" data-search="${escapeHtml(`${topic} ${label}`)}">
-      <span>Actif</span>
+  const topics = await db.listTopics();
+  const listed = topics.filter((topic) => topic.is_listed);
+  const totalPosts = listed.reduce((acc, topic) => acc + (topic.post_count || 0), 0);
+  const cards = listed
+    .map((topic) => {
+      const label = topic.label || topicLabel(topic.slug);
+      const description = topic.description
+        ? truncate(topic.description, 120)
+        : `${topic.post_count || 0} recap${topic.post_count > 1 ? "s" : ""} publie${topic.post_count > 1 ? "s" : ""}.`;
+      return `<a class="topic-card" href="/${escapeHtml(topic.slug)}" data-search="${escapeHtml(`${topic.slug} ${label}`)}">
+      <span>${topic.post_count > 0 ? "Actif" : "Bientot"}</span>
       <strong>${escapeHtml(label)}</strong>
-      <p>${topicCounts[topic] || 0} recap${topicCounts[topic] > 1 ? "s" : ""} publie${topicCounts[topic] > 1 ? "s" : ""}.</p>
+      <p>${escapeHtml(description)}</p>
     </a>`;
-  }).join("\n");
-  const jsonLd = {
+    })
+    .join("\n");
+
+  const description = `${SITE_DESCRIPTION} ${listed.length} sujet${listed.length > 1 ? "s" : ""}, ${totalPosts} recap${totalPosts > 1 ? "s" : ""} publié${totalPosts > 1 ? "s" : ""}.`;
+  const canonical = `${SITE_URL}/`;
+
+  const websiteJsonLd = {
     "@context": "https://schema.org",
     "@type": "WebSite",
-    name: "patch-notes.fr",
+    name: SITE_NAME,
     url: SITE_URL,
-    description: "Hub de veille par sujet avec recaps courts et sources.",
+    description: SITE_DESCRIPTION,
+    potentialAction: {
+      "@type": "SearchAction",
+      target: `${SITE_URL}/{topic}?q={search_term_string}`,
+      "query-input": "required name=search_term_string",
+    },
+  };
+
+  const itemListJsonLd = {
+    "@context": "https://schema.org",
+    "@type": "ItemList",
+    itemListElement: listed.map((topic, index) => ({
+      "@type": "ListItem",
+      position: index + 1,
+      url: `${SITE_URL}/${topic.slug}`,
+      name: topic.label || topicLabel(topic.slug),
+    })),
   };
 
   return `<!doctype html>
@@ -316,13 +307,14 @@ async function renderHubPage() {
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>patch-notes.fr</title>
-    <meta name="description" content="Hub de veille par sujet avec recaps courts, sources et liens utiles." />
-    <link rel="canonical" href="${escapeHtml(`${SITE_URL}/`)}" />
+    <title>${escapeHtml(SITE_NAME)} - hub d'actualité multi-sujets</title>
+    ${metaTags({ title: `${SITE_NAME} - hub d'actualité multi-sujets`, description: truncate(description), canonical })}
     <link rel="icon" href="/favicon.ico" sizes="any" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="alternate" type="application/rss+xml" title="Sitemap" href="/sitemap.xml" />
     <link rel="stylesheet" href="/styles.css" />
-    <script type="application/ld+json">${escapeJson(jsonLd)}</script>
+    <script type="application/ld+json">${escapeJson(websiteJsonLd)}</script>
+    <script type="application/ld+json">${escapeJson(itemListJsonLd)}</script>
   </head>
   <body>
     <header class="site-header">
@@ -331,7 +323,7 @@ async function renderHubPage() {
       </div>
       <nav class="site-header-actions" aria-label="Navigation">
         <a class="header-about-link" href="/a-propos">Mais c'est quoi ce site&nbsp;?</a>
-        <span id="status">${activeTopics.length} sujet${activeTopics.length > 1 ? "s" : ""}</span>
+        <span id="status">${listed.length} sujet${listed.length > 1 ? "s" : ""}</span>
       </nav>
     </header>
 
@@ -347,7 +339,7 @@ async function renderHubPage() {
       </label>
 
       <section class="topic-grid" id="topics" aria-label="Sujets">
-        ${cards}
+        ${cards || '<p class="empty">Aucun sujet pour le moment.</p>'}
       </section>
     </main>
 
@@ -363,107 +355,57 @@ async function renderHubPage() {
 `;
 }
 
-async function renderFeed(topic) {
-  const posts = (await readPosts()).filter((post) => (post.topic || "esport") === topic).slice(0, 20);
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0">
-  <channel>
-    <title>patch-notes.fr / ${escapeXml(topicLabel(topic))}</title>
-    <link>${escapeXml(`${SITE_URL}/${topic}`)}</link>
-    <description>Recaps courts et sources pour ${escapeXml(topicLabel(topic))}.</description>
-    <language>fr</language>
-${posts.map((post) => `    <item>
-      <title>${escapeXml(post.title)}</title>
-      <link>${escapeXml(`${SITE_URL}/${topic}/recap/${encodeURIComponent(post.id)}`)}</link>
-      <guid>${escapeXml(`${SITE_URL}/${topic}/recap/${encodeURIComponent(post.id)}`)}</guid>
-      <pubDate>${new Date(post.createdAt || Date.now()).toUTCString()}</pubDate>
-      <description>${escapeXml(post.summary)}</description>
-    </item>`).join("\n")}
-  </channel>
-</rss>
-`;
-}
-
-function renderArticleList(articles, limit = Infinity) {
-  const visibleArticles = articles.filter(isDisplayableArticle).slice(0, limit);
-  if (!visibleArticles.length) return '<li class="muted-row">Aucun article.</li>';
-
-  return visibleArticles.map((article) => {
-    const snippet = article.snippet ? `<p class="article-snippet">${escapeHtml(article.snippet)}</p>` : "";
-    return `<li>
-      <span class="article-meta">${escapeHtml(articleLabel(article))}</span>
-      <a href="${escapeHtml(article.url)}" target="_blank" rel="noreferrer">${escapeHtml(article.title)}</a>
-      ${snippet}
-    </li>`;
-  }).join("\n");
-}
-
-function articleCountLabel(frArticles, intlArticles) {
-  if (frArticles.length && intlArticles.length) return `${frArticles.length} FR / ${intlArticles.length} INT`;
-  const total = frArticles.length + intlArticles.length;
-  return `${total} article${total > 1 ? "s" : ""}`;
-}
-
-function renderArticleSections(frArticles, intlArticles, limit = Infinity) {
-  if (frArticles.length && intlArticles.length) {
-    return `<div class="split">
-      <section>
-        <h3>France</h3>
-        <ol class="articles fr-articles">${renderArticleList(frArticles, limit)}</ol>
-      </section>
-      <section>
-        <h3>International</h3>
-        <ol class="articles intl-articles">${renderArticleList(intlArticles, limit)}</ol>
-      </section>
-    </div>`;
-  }
-
-  const articles = frArticles.length ? frArticles : intlArticles;
-  return `<section>
-    <h3>Articles</h3>
-    <ol class="articles">${renderArticleList(articles, limit)}</ol>
-  </section>`;
-}
-
-function renderTopicPostCard(post, topic) {
-  const visibleArticles = (post.articles || []).filter(isDisplayableArticle);
-  const frArticles = visibleArticles.filter((article) => article.region === "fr");
-  const intlArticles = visibleArticles.filter((article) => article.region !== "fr");
-  const createdAt = new Date(post.createdAt || Date.now());
-
-  return `<article class="post">
-    <div class="post-meta">${escapeHtml(postSlot(post))} - ${escapeHtml(new Intl.DateTimeFormat("fr-FR", { dateStyle: "full", timeStyle: "short" }).format(createdAt))} - ${escapeHtml(articleCountLabel(frArticles, intlArticles))}</div>
-    <h2>${escapeHtml(post.title)}</h2>
-    <p class="summary">${escapeHtml(post.summary)}</p>
-    ${renderArticleSections(frArticles, intlArticles, 8)}
-    <a class="read-more" href="/${encodeURIComponent(topic)}/recap/${encodeURIComponent(post.id)}">Voir le recap complet</a>
-  </article>`;
-}
-
-async function renderTopicPage(topic) {
-  const label = topicLabel(topic);
-  const page = await getTopicPosts(topic);
-  const posts = page.posts;
-  const title = `patch-notes.fr/${topic}`;
-  const description = posts[0]?.summary
-    ? truncate(posts[0].summary)
-    : `Recaps courts, sources et liens utiles pour suivre l'actualite ${label}.`;
+async function renderTopicPage(topicSlug) {
+  const topic = await db.getTopic(topicSlug);
+  const label = topic?.label || topicLabel(topicSlug);
+  const description = topic?.description || `Récaps courts, sources et liens utiles pour suivre l'actualité ${label}.`;
+  const page = await db.getTopicPostsPage(topicSlug, { limit: TOPIC_PAGE_SIZE });
 
   let currentDay = "";
-  const postsHtml = posts.length ? posts.map((post) => {
-    const key = dayKey(post);
-    const heading = key !== currentDay ? `<h2 class="day-heading">${escapeHtml(dayLabel(post))}</h2>` : "";
-    currentDay = key;
-    return `${heading}${renderTopicPostCard(post, topic)}`;
-  }).join("\n") : '<p class="empty">Aucun recap pour le moment. Lance le workflow n8n pour publier le premier.</p>';
+  const postsHtml = page.posts.length
+    ? page.posts
+        .map((post) => {
+          const key = dayKey(post);
+          const heading = key !== currentDay ? `<h2 class="day-heading">${escapeHtml(dayLabel(post))}</h2>` : "";
+          currentDay = key;
+          return `${heading}${renderTopicPostCard(post, topicSlug)}`;
+        })
+        .join("\n")
+    : '<p class="empty">Aucun recap pour le moment. Lance le workflow n8n pour publier le premier.</p>';
 
-  const jsonLd = {
+  const canonical = `${SITE_URL}/${topicSlug}`;
+  const seoTitle = `${SITE_NAME}/${topicSlug} - veille ${label}`;
+  const seoDescription = page.posts[0]?.summary ? truncate(page.posts[0].summary) : truncate(description);
+
+  const collectionJsonLd = {
     "@context": "https://schema.org",
     "@type": "CollectionPage",
-    name: title,
-    description,
-    url: `${SITE_URL}/${topic}`,
-    isPartOf: { "@type": "WebSite", name: "patch-notes.fr", url: SITE_URL },
+    name: seoTitle,
+    description: seoDescription,
+    url: canonical,
+    isPartOf: { "@type": "WebSite", name: SITE_NAME, url: SITE_URL },
+    inLanguage: "fr-FR",
+    about: { "@type": "Thing", name: label },
+  };
+
+  const itemListJsonLd = {
+    "@context": "https://schema.org",
+    "@type": "ItemList",
+    itemListElement: page.posts.slice(0, 10).map((post, index) => ({
+      "@type": "ListItem",
+      position: index + 1,
+      url: `${SITE_URL}/${topicSlug}/recap/${encodeURIComponent(post.id)}`,
+      name: post.title,
+    })),
+  };
+
+  const breadcrumbJsonLd = {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: [
+      { "@type": "ListItem", position: 1, name: "Accueil", item: SITE_URL },
+      { "@type": "ListItem", position: 2, name: label, item: canonical },
+    ],
   };
 
   return `<!doctype html>
@@ -471,20 +413,21 @@ async function renderTopicPage(topic) {
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>${escapeHtml(title)}</title>
-    <meta name="description" content="${escapeHtml(description)}" />
-    <link rel="canonical" href="${escapeHtml(`${SITE_URL}/${topic}`)}" />
-    <link rel="alternate" type="application/rss+xml" title="patch-notes.fr / ${escapeHtml(topic)}" href="/${escapeHtml(topic)}/feed.xml" />
+    <title>${escapeHtml(seoTitle)}</title>
+    ${metaTags({ title: seoTitle, description: seoDescription, canonical })}
+    <link rel="alternate" type="application/rss+xml" title="${escapeHtml(SITE_NAME)} / ${escapeHtml(label)}" href="/${escapeHtml(topicSlug)}/feed.xml" />
     <link rel="icon" href="/favicon.ico" sizes="any" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/styles.css" />
-    <script type="application/ld+json">${escapeJson(jsonLd)}</script>
+    <script type="application/ld+json">${escapeJson(collectionJsonLd)}</script>
+    <script type="application/ld+json">${escapeJson(itemListJsonLd)}</script>
+    <script type="application/ld+json">${escapeJson(breadcrumbJsonLd)}</script>
   </head>
   <body>
     <header class="site-header">
       <div>
-        <p class="eyebrow"><a class="subtle-link" href="/">patch-notes.fr</a> / ${escapeHtml(topic)}</p>
-        <h1>${escapeHtml(topic)}</h1>
+        <p class="eyebrow"><a class="subtle-link" href="/">${escapeHtml(SITE_NAME)}</a> / ${escapeHtml(topicSlug)}</p>
+        <h1>${escapeHtml(topicSlug)}</h1>
       </div>
       <nav class="site-header-actions" aria-label="Navigation">
         <a class="header-about-link" href="/a-propos">Mais c'est quoi ce site&nbsp;?</a>
@@ -533,33 +476,54 @@ async function renderTopicPage(topic) {
 `;
 }
 
-function renderRecapPage(post, topic) {
-  const visibleArticles = (post.articles || []).filter(isDisplayableArticle);
-  const frArticles = visibleArticles.filter((article) => article.region === "fr");
-  const intlArticles = visibleArticles.filter((article) => article.region !== "fr");
+function renderRecapPage(post, topicSlug) {
   const createdAt = new Date(post.createdAt || Date.now());
   const description = truncate(post.summary || post.title);
-  const canonicalUrl = `${SITE_URL}/${topic}/recap/${encodeURIComponent(post.id)}`;
-  const title = `${post.title} | patch-notes.fr`;
-  const jsonLd = {
+  const canonicalUrl = `${SITE_URL}/${topicSlug}/recap/${encodeURIComponent(post.id)}`;
+  const title = `${post.title} | ${SITE_NAME}`;
+  const { visible } = partitionArticles(post);
+  const keywords = [
+    topicSlug,
+    ...new Set(visible.map((article) => article.source).filter(Boolean)),
+  ]
+    .slice(0, 12)
+    .join(", ");
+
+  const newsArticleJsonLd = {
     "@context": "https://schema.org",
-    "@type": "BlogPosting",
+    "@type": "NewsArticle",
     headline: post.title,
     description,
     datePublished: createdAt.toISOString(),
     dateModified: createdAt.toISOString(),
     mainEntityOfPage: canonicalUrl,
     url: canonicalUrl,
-    author: { "@type": "Organization", name: "patch-notes.fr" },
-    publisher: { "@type": "Organization", name: "patch-notes.fr" },
-    isPartOf: { "@type": "WebSite", name: "patch-notes.fr", url: SITE_URL },
+    inLanguage: "fr-FR",
+    articleSection: topicLabel(topicSlug),
+    keywords,
+    author: { "@type": "Organization", name: SITE_NAME, url: SITE_URL },
+    publisher: {
+      "@type": "Organization",
+      name: SITE_NAME,
+      url: SITE_URL,
+      logo: { "@type": "ImageObject", url: SITE_OG_IMAGE },
+    },
+    isPartOf: { "@type": "WebSite", name: SITE_NAME, url: SITE_URL },
+    about: { "@type": "Thing", name: topicLabel(topicSlug) },
+    citation: visible.slice(0, 10).map((article) => ({
+      "@type": "CreativeWork",
+      headline: article.title,
+      url: article.url,
+      author: { "@type": "Organization", name: article.source || "" },
+    })),
   };
+
   const breadcrumbJsonLd = {
     "@context": "https://schema.org",
     "@type": "BreadcrumbList",
     itemListElement: [
       { "@type": "ListItem", position: 1, name: "Accueil", item: SITE_URL },
-      { "@type": "ListItem", position: 2, name: topic, item: `${SITE_URL}/${topic}` },
+      { "@type": "ListItem", position: 2, name: topicLabel(topicSlug), item: `${SITE_URL}/${topicSlug}` },
       { "@type": "ListItem", position: 3, name: post.title, item: canonicalUrl },
     ],
   };
@@ -570,23 +534,30 @@ function renderRecapPage(post, topic) {
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>${escapeHtml(title)}</title>
-    <meta name="description" content="${escapeHtml(description)}" />
-    <link rel="canonical" href="${escapeHtml(canonicalUrl)}" />
+    ${metaTags({
+      title,
+      description,
+      canonical: canonicalUrl,
+      ogType: "article",
+      publishedTime: createdAt.toISOString(),
+      modifiedTime: createdAt.toISOString(),
+    })}
+    <meta name="news_keywords" content="${escapeHtml(keywords)}" />
     <link rel="icon" href="/favicon.ico" sizes="any" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/styles.css" />
-    <script type="application/ld+json">${escapeJson(jsonLd)}</script>
+    <script type="application/ld+json">${escapeJson(newsArticleJsonLd)}</script>
     <script type="application/ld+json">${escapeJson(breadcrumbJsonLd)}</script>
   </head>
   <body>
     <header class="site-header">
       <div>
-        <p class="eyebrow"><a class="subtle-link" href="/">patch-notes.fr</a> / <a class="subtle-link" href="/${escapeHtml(topic)}">${escapeHtml(topic)}</a> / recap</p>
-        <h1><a class="brand-link" href="/${escapeHtml(topic)}">${escapeHtml(topic)}</a></h1>
+        <p class="eyebrow"><a class="subtle-link" href="/">${escapeHtml(SITE_NAME)}</a> / <a class="subtle-link" href="/${escapeHtml(topicSlug)}">${escapeHtml(topicSlug)}</a> / recap</p>
+        <h1><a class="brand-link" href="/${escapeHtml(topicSlug)}">${escapeHtml(topicSlug)}</a></h1>
       </div>
       <nav class="site-header-actions" aria-label="Navigation">
         <a class="header-about-link" href="/a-propos">Mais c'est quoi ce site&nbsp;?</a>
-        <span id="status">${visibleArticles.length} article${visibleArticles.length > 1 ? "s" : ""}</span>
+        <span id="status">${visible.length} article${visible.length > 1 ? "s" : ""}</span>
       </nav>
     </header>
 
@@ -597,10 +568,12 @@ function renderRecapPage(post, topic) {
       </label>
       <section id="detail">
         <article class="post">
-          <div class="post-meta">${escapeHtml(topic)} - ${escapeHtml(new Intl.DateTimeFormat("fr-FR", { dateStyle: "full", timeStyle: "short" }).format(createdAt))}</div>
+          <div class="post-meta">${escapeHtml(topicSlug)} - ${escapeHtml(
+            new Intl.DateTimeFormat("fr-FR", { dateStyle: "full", timeStyle: "short" }).format(createdAt),
+          )}</div>
           <h2>${escapeHtml(post.title)}</h2>
           <p class="summary">${escapeHtml(post.summary || "")}</p>
-          ${renderArticleSections(frArticles, intlArticles)}
+          ${renderArticleSections(post)}
         </article>
       </section>
     </main>
@@ -616,6 +589,110 @@ function renderRecapPage(post, topic) {
 `;
 }
 
+async function renderFeed(topicSlug) {
+  const posts = await db.getRecentPostsForTopic(topicSlug, 30);
+  const topic = await db.getTopic(topicSlug);
+  const label = topic?.label || topicLabel(topicSlug);
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>${escapeXml(SITE_NAME)} / ${escapeXml(label)}</title>
+    <link>${escapeXml(`${SITE_URL}/${topicSlug}`)}</link>
+    <atom:link href="${escapeXml(`${SITE_URL}/${topicSlug}/feed.xml`)}" rel="self" type="application/rss+xml" />
+    <description>Recaps courts et sources pour ${escapeXml(label)}.</description>
+    <language>fr-FR</language>
+${posts
+  .map(
+    (post) => `    <item>
+      <title>${escapeXml(post.title)}</title>
+      <link>${escapeXml(`${SITE_URL}/${topicSlug}/recap/${encodeURIComponent(post.id)}`)}</link>
+      <guid isPermaLink="true">${escapeXml(`${SITE_URL}/${topicSlug}/recap/${encodeURIComponent(post.id)}`)}</guid>
+      <pubDate>${new Date(post.createdAt || Date.now()).toUTCString()}</pubDate>
+      <description>${escapeXml(post.summary || "")}</description>
+    </item>`,
+  )
+  .join("\n")}
+  </channel>
+</rss>
+`;
+}
+
+async function renderSitemapIndex() {
+  const topics = await db.listTopics();
+  const listed = topics.filter((topic) => topic.is_listed);
+  const entries = [
+    { loc: `${SITE_URL}/sitemap-core.xml`, lastmod: new Date().toISOString() },
+    ...listed.map((topic) => ({
+      loc: `${SITE_URL}/sitemap-${topic.slug}.xml`,
+      lastmod: (topic.last_post_at instanceof Date ? topic.last_post_at : new Date()).toISOString(),
+    })),
+  ];
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${entries
+  .map(
+    (entry) => `  <sitemap>
+    <loc>${escapeXml(entry.loc)}</loc>
+    <lastmod>${entry.lastmod}</lastmod>
+  </sitemap>`,
+  )
+  .join("\n")}
+</sitemapindex>
+`;
+}
+
+async function renderCoreSitemap() {
+  const topics = (await db.listTopics()).filter((topic) => topic.is_listed);
+  const urls = [
+    { loc: `${SITE_URL}/`, changefreq: "hourly", priority: "1.0" },
+    { loc: `${SITE_URL}/a-propos`, changefreq: "monthly", priority: "0.4" },
+    { loc: `${SITE_URL}/mentions-legales`, changefreq: "yearly", priority: "0.2" },
+    { loc: `${SITE_URL}/confidentialite`, changefreq: "yearly", priority: "0.2" },
+    { loc: `${SITE_URL}/conditions`, changefreq: "yearly", priority: "0.2" },
+    ...topics.map((topic) => ({
+      loc: `${SITE_URL}/${topic.slug}`,
+      changefreq: "hourly",
+      priority: "0.9",
+      lastmod: topic.last_post_at instanceof Date ? topic.last_post_at.toISOString() : null,
+    })),
+  ];
+
+  return urlSetXml(urls);
+}
+
+async function renderTopicSitemap(topicSlug) {
+  const topic = await db.getTopic(topicSlug);
+  if (!topic) return null;
+  const posts = await db.getRecentPostsForTopic(topicSlug, 5000);
+  const urls = [
+    { loc: `${SITE_URL}/${topicSlug}`, changefreq: "hourly", priority: "0.9" },
+    ...posts.map((post) => ({
+      loc: `${SITE_URL}/${topicSlug}/recap/${encodeURIComponent(post.id)}`,
+      lastmod: new Date(post.createdAt || Date.now()).toISOString(),
+      changefreq: "weekly",
+      priority: "0.7",
+    })),
+  ];
+  return urlSetXml(urls);
+}
+
+function urlSetXml(urls) {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${urls
+  .map(
+    (url) => `  <url>
+    <loc>${escapeXml(url.loc)}</loc>${url.lastmod ? `\n    <lastmod>${url.lastmod}</lastmod>` : ""}
+    <changefreq>${url.changefreq}</changefreq>
+    <priority>${url.priority}</priority>
+  </url>`,
+  )
+  .join("\n")}
+</urlset>
+`;
+}
+
 async function serveStatic(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const requestedPath = url.pathname === "/" ? "/index.html" : url.pathname;
@@ -628,129 +705,243 @@ async function serveStatic(req, res) {
 
   try {
     const body = await fs.readFile(filePath);
-    send(res, 200, body, contentTypes[path.extname(filePath)] || "application/octet-stream");
+    const ext = path.extname(filePath);
+    send(res, 200, body, contentTypes[ext] || "application/octet-stream", {
+      "cache-control": "public, max-age=300, s-maxage=600",
+    });
   } catch {
     send(res, 404, "Not found", "text/plain; charset=utf-8");
   }
 }
 
+async function handleRequest(req, res) {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+
+  if (req.method === "GET" && url.pathname === "/health") {
+    try {
+      await db.pingDb();
+      send(res, 200, JSON.stringify({ ok: true }));
+    } catch (error) {
+      send(res, 503, JSON.stringify({ ok: false, error: error.message }));
+    }
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/") {
+    send(res, 200, await renderHubPage(), contentTypes[".html"], {
+      "cache-control": "public, max-age=60, s-maxage=120",
+    });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/robots.txt") {
+    send(
+      res,
+      200,
+      `User-agent: *\nAllow: /\nSitemap: ${SITE_URL}/sitemap.xml\n`,
+      contentTypes[".txt"],
+      { "cache-control": "public, max-age=86400" },
+    );
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/sitemap.xml") {
+    send(res, 200, await renderSitemapIndex(), contentTypes[".xml"], {
+      "cache-control": "public, max-age=600",
+    });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/sitemap-core.xml") {
+    send(res, 200, await renderCoreSitemap(), contentTypes[".xml"], {
+      "cache-control": "public, max-age=600",
+    });
+    return;
+  }
+
+  const sitemapTopicMatch = url.pathname.match(/^\/sitemap-([a-z0-9-]+)\.xml$/);
+  if (req.method === "GET" && sitemapTopicMatch) {
+    const xml = await renderTopicSitemap(sitemapTopicMatch[1]);
+    if (!xml) {
+      send(res, 404, "Sitemap inconnu.", contentTypes[".txt"]);
+      return;
+    }
+    send(res, 200, xml, contentTypes[".xml"], { "cache-control": "public, max-age=600" });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname.startsWith("/api/posts/")) {
+    const id = decodeURIComponent(url.pathname.replace("/api/posts/", ""));
+    const post = await db.getPostById(id);
+    send(res, post ? 200 : 404, JSON.stringify(post || { error: "Post not found" }));
+    return;
+  }
+
+  const topicPostsMatch = url.pathname.match(/^\/api\/topics\/([a-z0-9-]+)\/posts$/);
+  if (req.method === "GET" && topicPostsMatch) {
+    const result = await db.getTopicPostsPage(topicPostsMatch[1], {
+      offset: url.searchParams.get("offset"),
+      limit: url.searchParams.get("limit"),
+      query: url.searchParams.get("q") || "",
+    });
+    send(res, 200, JSON.stringify(result));
+    return;
+  }
+
+  const sameDayMatch = url.pathname.match(/^\/api\/topics\/([a-z0-9-]+)\/same-day-urls$/);
+  if (req.method === "GET" && sameDayMatch) {
+    const day = url.searchParams.get("date") || new Date().toISOString().slice(0, 10);
+    const urls = await db.getSameDayUrlKeys(sameDayMatch[1], day);
+    send(res, 200, JSON.stringify({ topic: sameDayMatch[1], date: day, urls }));
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/topics") {
+    const topics = await db.listTopics();
+    send(res, 200, JSON.stringify({ topics }));
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/gemini/reserve") {
+    if (req.headers["x-blog-secret"] !== BLOG_SECRET) {
+      send(res, 401, JSON.stringify({ error: "Invalid blog secret" }));
+      return;
+    }
+    const body = await readJsonBody(req);
+    const result = await db.reserveGeminiSlot({
+      topicSlug: body.topicSlug || null,
+      maxPerMinute: body.maxPerMinute,
+      maxWaitSeconds: body.maxWaitSeconds,
+    });
+    send(res, 200, JSON.stringify(result));
+    return;
+  }
+
+  const staticPages = {
+    "/mentions-legales": "mentions-legales.html",
+    "/confidentialite": "confidentialite.html",
+    "/conditions": "conditions.html",
+    "/a-propos": "a-propos.html",
+  };
+  const staticPagePath = url.pathname.replace(/\/$/, "") || "/";
+
+  if (req.method === "GET" && staticPages[staticPagePath]) {
+    const body = await fs.readFile(path.join(PUBLIC_DIR, staticPages[staticPagePath]));
+    send(res, 200, body, contentTypes[".html"], {
+      "cache-control": "public, max-age=600, s-maxage=1200",
+    });
+    return;
+  }
+
+  const feedMatch = url.pathname.match(/^\/([a-z0-9-]+)\/feed\.xml$/);
+  if (req.method === "GET" && feedMatch) {
+    send(res, 200, await renderFeed(feedMatch[1]), contentTypes[".xml"], {
+      "cache-control": "public, max-age=300",
+    });
+    return;
+  }
+
+  if (req.method === "GET" && (url.pathname.startsWith("/recap/") || /^\/[a-z0-9-]+\/recap\//.test(url.pathname))) {
+    const match = url.pathname.match(/^\/(?:(?<topic>[a-z0-9-]+)\/)?recap\/(?<id>[^/]+)\/?$/);
+    const topicSlug = match?.groups?.topic || "esport";
+    const id = decodeURIComponent(match?.groups?.id || "");
+    const post = await db.getPostById(id);
+    if (!post || (post.topic || "esport") !== topicSlug) {
+      send(res, 404, "Recap introuvable.", contentTypes[".txt"]);
+      return;
+    }
+    send(res, 200, renderRecapPage(post, topicSlug), contentTypes[".html"], {
+      "cache-control": "public, max-age=300, s-maxage=600",
+    });
+    return;
+  }
+
+  if (req.method === "GET" && isPublicTopicPath(url.pathname)) {
+    const topicSlug = url.pathname.replace(/^\/|\/$/g, "");
+    send(res, 200, await renderTopicPage(topicSlug), contentTypes[".html"], {
+      "cache-control": "public, max-age=120, s-maxage=240",
+    });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/posts") {
+    if (req.headers["x-blog-secret"] !== BLOG_SECRET) {
+      send(res, 401, JSON.stringify({ error: "Invalid blog secret" }));
+      return;
+    }
+
+    const body = await readJsonBody(req);
+    const result = await db.createPost(body);
+    if (result.skipped) {
+      send(res, 200, JSON.stringify({ ok: true, skipped: true, reason: result.reason }));
+      return;
+    }
+    send(res, 201, JSON.stringify({ ok: true, post: result.post }));
+    return;
+  }
+
+  if (req.method === "PUT" && url.pathname === "/api/topics") {
+    if (req.headers["x-blog-secret"] !== BLOG_SECRET) {
+      send(res, 401, JSON.stringify({ error: "Invalid blog secret" }));
+      return;
+    }
+    const body = await readJsonBody(req);
+    const topic = await db.upsertTopic(body);
+    send(res, 200, JSON.stringify({ ok: true, topic }));
+    return;
+  }
+
+  if (req.method === "GET") {
+    await serveStatic(req, res);
+    return;
+  }
+
+  send(res, 405, "Method not allowed", contentTypes[".txt"]);
+}
+
 const server = http.createServer(async (req, res) => {
   try {
-    const url = new URL(req.url, `http://${req.headers.host}`);
-
-    if (req.method === "GET" && url.pathname === "/") {
-      send(res, 200, await renderHubPage(), contentTypes[".html"]);
-      return;
-    }
-
-    if (req.method === "GET" && url.pathname === "/posts.json") {
-      send(res, 200, JSON.stringify(await readPosts()));
-      return;
-    }
-
-    if (req.method === "GET" && url.pathname === "/robots.txt") {
-      send(res, 200, `User-agent: *
-Allow: /
-Sitemap: ${SITE_URL}/sitemap.xml
-`, "text/plain; charset=utf-8");
-      return;
-    }
-
-    if (req.method === "GET" && url.pathname === "/sitemap.xml") {
-      send(res, 200, await renderSitemap(), contentTypes[".xml"]);
-      return;
-    }
-
-    if (req.method === "GET" && url.pathname.startsWith("/api/posts/")) {
-      const id = decodeURIComponent(url.pathname.replace("/api/posts/", ""));
-      const post = (await readPosts()).find((item) => item.id === id);
-      send(res, post ? 200 : 404, JSON.stringify(post || { error: "Post not found" }));
-      return;
-    }
-
-    const topicPostsMatch = url.pathname.match(/^\/api\/topics\/([a-z0-9-]+)\/posts$/);
-    if (req.method === "GET" && topicPostsMatch) {
-      const result = await getTopicPosts(topicPostsMatch[1], {
-        offset: url.searchParams.get("offset"),
-        limit: url.searchParams.get("limit"),
-        query: url.searchParams.get("q") || "",
-      });
-      send(res, 200, JSON.stringify(result));
-      return;
-    }
-
-    const staticPages = {
-      "/mentions-legales": "mentions-legales.html",
-      "/confidentialite": "confidentialite.html",
-      "/conditions": "conditions.html",
-      "/a-propos": "a-propos.html",
-    };
-    const staticPagePath = url.pathname.replace(/\/$/, "") || "/";
-
-    if (req.method === "GET" && staticPages[staticPagePath]) {
-      const body = await fs.readFile(path.join(PUBLIC_DIR, staticPages[staticPagePath]));
-      send(res, 200, body, contentTypes[".html"]);
-      return;
-    }
-
-    const feedMatch = url.pathname.match(/^\/([a-z0-9-]+)\/feed\.xml$/);
-    if (req.method === "GET" && feedMatch) {
-      send(res, 200, await renderFeed(feedMatch[1]), contentTypes[".xml"]);
-      return;
-    }
-
-    if (req.method === "GET" && (url.pathname.startsWith("/recap/") || /^\/[a-z0-9-]+\/recap\//.test(url.pathname))) {
-      const match = url.pathname.match(/^\/(?:(?<topic>[a-z0-9-]+)\/)?recap\/(?<id>[^/]+)\/?$/);
-      const topic = match?.groups?.topic || "esport";
-      const id = decodeURIComponent(match?.groups?.id || "");
-      const post = (await readPosts()).find((item) => item.id === id && (item.topic || "esport") === topic);
-      if (!post) {
-        send(res, 404, "Recap introuvable.", "text/plain; charset=utf-8");
-        return;
-      }
-      send(res, 200, renderRecapPage(post, topic), contentTypes[".html"]);
-      return;
-    }
-
-    if (req.method === "GET" && isPublicTopicPath(url.pathname)) {
-      const topic = url.pathname.replace(/^\/|\/$/g, "");
-      send(res, 200, await renderTopicPage(topic), contentTypes[".html"]);
-      return;
-    }
-
-    if (req.method === "POST" && url.pathname === "/api/posts") {
-      if (req.headers["x-blog-secret"] !== BLOG_SECRET) {
-        send(res, 401, JSON.stringify({ error: "Invalid blog secret" }));
-        return;
-      }
-
-      const saved = await writePost(await readJsonBody(req));
-      if (!saved) {
-        send(res, 200, JSON.stringify({ ok: true, skipped: true, reason: "No new article for this day" }));
-        return;
-      }
-      send(res, 201, JSON.stringify({ ok: true, post: saved }));
-      return;
-    }
-
-    if (req.method === "GET") {
-      await serveStatic(req, res);
-      return;
-    }
-
-    send(res, 405, "Method not allowed", "text/plain; charset=utf-8");
+    await handleRequest(req, res);
   } catch (error) {
-    send(res, 500, JSON.stringify({ error: error.message }));
+    console.error("[server] error", error);
+    send(res, 500, JSON.stringify({ error: error.message || "internal error" }));
   }
 });
 
-ensurePostsFile()
-  .then(() => {
-    server.listen(PORT, () => {
-      console.log(`Blog esport listening on http://localhost:${PORT}`);
-    });
-  })
-  .catch((error) => {
-    console.error(error);
-    process.exit(1);
+async function start() {
+  await db.ensureSchema();
+
+  // Auto-déclare les sujets de référence pour que la home affiche les cartes
+  // même avant la première publication n8n. Le script n8n peut surcharger.
+  const seeds = [
+    { slug: "esport", label: "Esport", description: "Compétitions, rosters, tournois et scènes FR / internationales.", mode: "fr-intl" },
+  ];
+  for (const seed of seeds) {
+    try {
+      await db.upsertTopic(seed);
+    } catch (error) {
+      console.warn("[seed] topic", seed.slug, error.message);
+    }
+  }
+
+  server.listen(PORT, () => {
+    console.log(`[blog] listening on http://0.0.0.0:${PORT}`);
   });
+}
+
+function shutdown(signal) {
+  console.log(`[blog] received ${signal}, shutting down`);
+  server.close(async () => {
+    await db.close().catch((error) => console.error("[blog] close error", error));
+    process.exit(0);
+  });
+  setTimeout(() => process.exit(1), 10_000).unref();
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
+
+start().catch((error) => {
+  console.error("[blog] startup failed", error);
+  process.exit(1);
+});

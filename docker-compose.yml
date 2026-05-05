@@ -1,4 +1,3 @@
-root@tuxpower:/srv/web/patch-notes# cat docker-compose.yml
 services:
   postgres:
     image: postgres:16-alpine
@@ -9,11 +8,36 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 5
+
+  blog:
+    build:
+      context: ./blog
+      dockerfile: Dockerfile
+    image: patch-notes-blog:latest
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${BLOG_PORT:-3001}:3001"
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${BLOG_DB:-patch_notes}
+      DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-10}
+      BLOG_SECRET: ${BLOG_SECRET:-dev-change-me}
+      SITE_URL: ${SITE_URL:-http://localhost:3001}
+      SITE_NAME: ${SITE_NAME:-patch-notes.fr}
+      SITE_DESCRIPTION: ${SITE_DESCRIPTION:-}
+      SITE_LOCALE: ${SITE_LOCALE:-fr_FR}
+      SITE_OG_IMAGE: ${SITE_OG_IMAGE:-}
+      TZ: ${TZ:-Europe/Paris}
 
   n8n:
     image: n8nio/n8n:latest
@@ -21,8 +45,10 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      blog:
+        condition: service_started
     ports:
-      - "${N8N_PORT}:5678"
+      - "${N8N_PORT:-5678}:5678"
     environment:
       DB_TYPE: postgresdb
       DB_POSTGRESDB_HOST: postgres
@@ -31,17 +57,22 @@ services:
       DB_POSTGRESDB_USER: ${POSTGRES_USER}
       DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
       N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
-      N8N_HOST: ${N8N_HOST}
+      N8N_HOST: ${N8N_HOST:-localhost}
       N8N_PORT: 5678
-      N8N_PROTOCOL: ${N8N_PROTOCOL}
+      N8N_PROTOCOL: ${N8N_PROTOCOL:-http}
       N8N_PROXY_HOPS: ${N8N_PROXY_HOPS:-1}
-      WEBHOOK_URL: ${WEBHOOK_URL}
-      GENERIC_TIMEZONE: ${GENERIC_TIMEZONE}
-      TZ: ${TZ}
+      WEBHOOK_URL: ${WEBHOOK_URL:-http://localhost:5678/}
+      GENERIC_TIMEZONE: ${GENERIC_TIMEZONE:-Europe/Paris}
+      TZ: ${TZ:-Europe/Paris}
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+
+      # Variables exposées aux nodes Code des workflows.
+      BLOG_INTERNAL_URL: http://blog:3001
+      BLOG_SECRET: ${BLOG_SECRET:-dev-change-me}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
-      BLOG_SECRET: ${BLOG_SECRET:-dev-change-me}
-      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+      GEMINI_MAX_PER_MINUTE: ${GEMINI_MAX_PER_MINUTE:-5}
+      GEMINI_MAX_WAIT_SECONDS: ${GEMINI_MAX_WAIT_SECONDS:-1800}
     volumes:
       - n8n_data:/home/node/.n8n
 

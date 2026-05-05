@@ -1,8 +1,22 @@
 {
-  "name": "esport-recap-blog",
-  "version": "1.0.0",
+  "name": "patch-notes-blog",
+  "version": "2.0.0",
   "private": true,
+  "description": "Hub d'actualité patch-notes.fr - serveur SSR + API.",
+  "main": "server.js",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "dev": "node server.js",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate:deploy": "prisma migrate deploy",
+    "prisma:migrate:dev": "prisma migrate dev",
+    "prisma:studio": "prisma studio"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.22.0",
+    "prisma": "^5.22.0"
   }
 }

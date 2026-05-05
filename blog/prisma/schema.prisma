@@ -1,0 +1,79 @@
+// Schéma Prisma pour le blog patch-notes.fr.
+// Connexion sur la base patch_notes (créée par db/init/01-create-blog-db.sql).
+// Les migrations sont versionnées dans prisma/migrations/ et appliquées par
+// `prisma migrate deploy` au démarrage du conteneur (cf. Dockerfile).
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+  output        = "../node_modules/.prisma/client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Topic {
+  slug        String   @id
+  label       String
+  description String?
+  mode        String   @default("fr-intl")
+  isListed    Boolean  @default(true) @map("is_listed")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  posts Post[]
+
+  @@map("topics")
+}
+
+model Post {
+  id           String   @id
+  topicSlug    String   @map("topic_slug")
+  title        String
+  summary      String   @default("")
+  slot         String?
+  mode         String?
+  sourceGroups Json     @default("{}") @map("source_groups")
+  errors       Json     @default("[]")
+  debug        Json     @default("{}")
+  searchText   String   @default("") @map("search_text")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  topic    Topic     @relation(fields: [topicSlug], references: [slug], onDelete: Cascade)
+  articles Article[]
+
+  @@index([topicSlug, createdAt(sort: Desc)], map: "posts_topic_created_idx")
+  @@index([createdAt(sort: Desc)], map: "posts_created_idx")
+  @@map("posts")
+}
+
+model Article {
+  id          BigInt    @id @default(autoincrement())
+  postId      String    @map("post_id")
+  title       String
+  url         String
+  urlKey      String    @map("url_key")
+  source      String?
+  region      String?
+  method      String?
+  snippet     String?
+  publishedAt DateTime? @map("published_at") @db.Timestamptz(6)
+  position    Int       @default(0)
+
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@index([postId], map: "articles_post_id_idx")
+  @@index([urlKey], map: "articles_url_key_idx")
+  @@map("articles")
+}
+
+model GeminiCall {
+  id        BigInt   @id @default(autoincrement())
+  calledAt  DateTime @default(now()) @map("called_at") @db.Timestamptz(6)
+  topicSlug String?  @map("topic_slug")
+
+  @@index([calledAt(sort: Desc)], map: "gemini_calls_called_at_idx")
+  @@map("gemini_calls")
+}
