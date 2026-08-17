@@ -3,12 +3,30 @@
 !.env.example
 !.env.production.example
 *.local
+
 node_modules/
+blog/node_modules/
+
 postgres_data/
-n8n_data/
-blog/data/*.json
-!blog/data/.gitkeep
-*.log
-temp-*.js
 backups/
 
+blog/data/*.json
+!blog/data/.gitkeep
+
+*.log
+temp-*.js
+
+.orchestrator/
+.claude/
+.cursor/
+
+# Assets sources (copies servies depuis blog/public/)
+ChatGPT*.png
+Gemini_Generated*.jpeg
+Gemini_Generated*.jpg
+
+# OS / IDE
+Thumbs.db
+.DS_Store
+.idea/
+.vscode/

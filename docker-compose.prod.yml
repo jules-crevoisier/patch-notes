@@ -7,11 +7,10 @@
 #   ./scripts/deploy.sh
 #
 # Différences avec le compose de dev :
-#   - blog et n8n n'écoutent que sur 127.0.0.1 (loopback) ;
-#     impossible de les atteindre depuis Internet, seul Apache (qui tourne sur
-#     l'hôte) peut les contacter via 127.0.0.1:3001 et 127.0.0.1:5678.
+#   - blog n'écoute que sur 127.0.0.1 (loopback) ; impossible de l'atteindre
+#     depuis Internet, seul Apache (qui tourne sur l'hôte) peut le contacter
+#     via 127.0.0.1:3001.
 #   - postgres reste sur le réseau Docker, totalement invisible depuis l'hôte.
-#   - n8n protégé par basic auth (refuse de démarrer sans).
 #   - resource limits, log rotation, restart=always, healthchecks stricts.
 # =============================================================================
 
@@ -38,6 +37,7 @@ services:
       NODE_ENV: production
       SITE_URL: ${SITE_URL:?SITE_URL doit être défini en prod (https://ton-domaine).}
       BLOG_SECRET: ${BLOG_SECRET:?BLOG_SECRET doit être défini (32+ caractères).}
+      IP_HASH_SECRET: ${IP_HASH_SECRET:?IP_HASH_SECRET doit être défini (32+ caractères).}
     logging:
       driver: json-file
       options:
@@ -47,32 +47,3 @@ services:
       resources:
         limits:
           memory: 512M
-
-  n8n:
-    restart: always
-    ports: !override
-      - "127.0.0.1:5678:5678"
-    environment:
-      # Reverse proxy : on dit à n8n son URL publique pour les webhooks.
-      N8N_HOST: ${N8N_HOST:?N8N_HOST doit être défini (ex. n8n.ton-domaine).}
-      N8N_PROTOCOL: https
-      WEBHOOK_URL: https://${N8N_HOST}/
-      # Apache ajoute X-Forwarded-* (cf. vhost). 1 hop de proxy.
-      N8N_PROXY_HOPS: 1
-      # Basic auth obligatoire en prod.
-      N8N_BASIC_AUTH_ACTIVE: "true"
-      N8N_BASIC_AUTH_USER: ${N8N_BASIC_AUTH_USER:?N8N_BASIC_AUTH_USER doit être défini en prod.}
-      N8N_BASIC_AUTH_PASSWORD: ${N8N_BASIC_AUTH_PASSWORD:?N8N_BASIC_AUTH_PASSWORD doit être défini en prod (16+ caractères).}
-      # Les nœuds Code des workflows lisent GEMINI_API_KEY/BLOG_SECRET via $env.
-      # On laisse à false, BLOG_SECRET solide compense.
-      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
-      N8N_RUNNERS_ENABLED: "true"
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "5"
-    deploy:
-      resources:
-        limits:
-          memory: 1G

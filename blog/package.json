@@ -10,6 +10,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
+    "test": "node --test automation/**/*.test.js *.test.js",
+    "test:pin-race": "node --test integration/pin-race.test.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate:deploy": "prisma migrate deploy",
     "prisma:migrate:dev": "prisma migrate dev",
@@ -17,6 +19,7 @@
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",
+    "node-cron": "^4.6.0",
     "prisma": "^5.22.0"
   }
 }

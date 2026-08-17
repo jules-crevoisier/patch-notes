@@ -3,8 +3,12 @@
  *
  * Sert:
  *   - Les pages SSR (hub, sujet, recap, pages légales).
- *   - L'API JSON consommée par le frontend et n8n.
+ *   - L'API JSON consommée par le frontend.
  *   - Le sitemap, les flux RSS et le robots.txt pour le SEO.
+ *
+ * Le pipeline de récap (fetch RSS/Google News -> Gemini -> publication) tourne
+ * en interne via blog/automation/ (cron scheduler + appel direct à db.js,
+ * plus de service n8n séparé). Cf. blog/automation/scheduler.js.
  *
  * Persistance: PostgreSQL via blog/db.js (cf. docker-compose).
  *
@@ -18,16 +22,25 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 
 const db = require("./db");
+const automation = require("./automation/scheduler");
+const pins = require("./pins");
+const seoUrls = require("./seo-urls");
 
 const PORT = Number(process.env.PORT || 3001);
 const BLOG_SECRET = process.env.BLOG_SECRET || "dev-change-me";
+const IP_HASH_SECRET = process.env.IP_HASH_SECRET || "dev-change-me-ip-hash";
 const SITE_URL = (process.env.SITE_URL || "http://localhost:3001").replace(/\/$/, "");
 const SITE_NAME = process.env.SITE_NAME || "patch-notes.fr";
 const SITE_DESCRIPTION =
   process.env.SITE_DESCRIPTION ||
   "Hub d'actualité par sujet : récaps courts, sources et liens utiles, mis à jour plusieurs fois par jour.";
 const SITE_LOCALE = process.env.SITE_LOCALE || "fr_FR";
-const SITE_OG_IMAGE = process.env.SITE_OG_IMAGE || `${SITE_URL}/favicon.svg`;
+const SITE_OG_IMAGE = process.env.SITE_OG_IMAGE || `${SITE_URL}/og.jpg`;
+const SITE_OG_IMAGE_WIDTH = Number(process.env.SITE_OG_IMAGE_WIDTH || 1424);
+const SITE_OG_IMAGE_HEIGHT = Number(process.env.SITE_OG_IMAGE_HEIGHT || 752);
+const SITE_OG_IMAGE_ALT =
+  process.env.SITE_OG_IMAGE_ALT || `${SITE_NAME} — hub d'actualité multi-sujets`;
+const GOOGLE_SITE_VERIFICATION = process.env.GOOGLE_SITE_VERIFICATION || "";
 
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, "public");
@@ -39,6 +52,9 @@ const contentTypes = {
   ".js": "text/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
   ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
   ".ico": "image/x-icon",
   ".xml": "application/xml; charset=utf-8",
   ".txt": "text/plain; charset=utf-8",
@@ -46,9 +62,9 @@ const contentTypes = {
 
 const reservedPublicPaths = new Set([
   "a-propos",
-  "conditions",
   "confidentialite",
   "mentions-legales",
+  "suggerer",
 ]);
 
 async function readJsonBody(req) {
@@ -88,6 +104,13 @@ function escapeJson(value) {
 
 function escapeXml(value = "") {
   return escapeHtml(value).replace(/'/g, "&apos;");
+}
+
+function getClientIp(req) {
+  // Dev has no reverse proxy in front of it, so x-real-ip is absent locally -
+  // remoteAddress is the fallback. Never logged, never stored raw: only
+  // pins.hashIp(...)'s output ever touches the database.
+  return req.headers["x-real-ip"] || req.socket.remoteAddress || "";
 }
 
 function topicLabel(topic) {
@@ -179,23 +202,34 @@ function articleCountLabel(frArticles, intlArticles) {
   return `${total} article${total > 1 ? "s" : ""}`;
 }
 
-function renderArticleList(articles, limit = Infinity) {
+function sendRedirect(res, location, status = 301) {
+  res.writeHead(status, { Location: location, "cache-control": "public, max-age=3600" });
+  res.end();
+}
+
+function renderArticleList(articles, { topicSlug, limit = Infinity } = {}) {
   const visibleArticles = articles.slice(0, limit);
   if (!visibleArticles.length) return '<li class="muted-row">Aucun article.</li>';
 
   return visibleArticles
     .map((article) => {
+      const landingPath = article.landingPath || seoUrls.articlePublicPath(topicSlug, article);
       const snippet = article.snippet ? `<p class="article-snippet">${escapeHtml(article.snippet)}</p>` : "";
+      const sourceLink = article.url
+        ? `<a class="article-source-link" href="${escapeHtml(article.url)}" target="_blank" rel="noopener noreferrer">Lire sur ${escapeHtml(article.source || "la source")} ↗</a>`
+        : "";
       return `<li>
       <span class="article-meta">${escapeHtml(articleLabel(article))}</span>
-      <a href="${escapeHtml(article.url)}" target="_blank" rel="noreferrer">${escapeHtml(article.title)}</a>
+      <a href="${escapeHtml(landingPath)}">${escapeHtml(article.title)}</a>
       ${snippet}
+      ${sourceLink}
     </li>`;
     })
     .join("\n");
 }
 
-function renderArticleSections(post, limit = Infinity) {
+function renderArticleSections(post, { topicSlug, limit = Infinity } = {}) {
+  const slug = topicSlug || post.topic;
   const mode = postMode(post);
   const { fr, intl } = partitionArticles(post);
 
@@ -203,11 +237,11 @@ function renderArticleSections(post, limit = Infinity) {
     return `<div class="split">
       <section>
         <h3>France</h3>
-        <ol class="articles fr-articles">${renderArticleList(fr, limit)}</ol>
+        <ol class="articles fr-articles">${renderArticleList(fr, { topicSlug: slug, limit })}</ol>
       </section>
       <section>
         <h3>International</h3>
-        <ol class="articles intl-articles">${renderArticleList(intl, limit)}</ol>
+        <ol class="articles intl-articles">${renderArticleList(intl, { topicSlug: slug, limit })}</ol>
       </section>
     </div>`;
   }
@@ -215,8 +249,44 @@ function renderArticleSections(post, limit = Infinity) {
   const articles = mode === "intl" ? intl : mode === "fr" ? fr : [...fr, ...intl];
   return `<section>
     <h3>Articles</h3>
-    <ol class="articles">${renderArticleList(articles, limit)}</ol>
+    <ol class="articles">${renderArticleList(articles, { topicSlug: slug, limit })}</ol>
   </section>`;
+}
+
+const PIN_GLYPH_SVG = `<svg class="pin-toggle-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M16 9V4h1c.55 0 1-.45 1-1s-.45-1-1-1H7c-.55 0-1 .45-1 1s.45 1 1 1h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1.03 1 1.03-1v-7H19v-2c-1.66 0-3-1.34-3-3z"/></svg>`;
+
+function renderSiteHeaderNav({ statusHtml = "" } = {}) {
+  const status = statusHtml ? `\n        ${statusHtml}` : "";
+  return `<nav class="site-header-actions" aria-label="Navigation">
+        <a class="header-nav-link" href="/suggerer">Suggérer un sujet</a>
+        <a class="header-nav-link" href="/a-propos">Mais c'est quoi ce site&nbsp;?</a>${status}
+      </nav>`;
+}
+
+function renderFaviconLinks() {
+  return `<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/favicon.png" type="image/png" sizes="512x512" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" sizes="180x180" />`;
+}
+
+function renderSiteFooter({ isHome = false } = {}) {
+  const links = [];
+  if (!isHome) links.push('<a href="/">Accueil</a>');
+  links.push(
+    '<a href="/a-propos">Mais c\'est quoi ce site&nbsp;?</a>',
+    '<a href="/mentions-legales">Mentions légales</a>',
+    '<a href="/confidentialite">Confidentialité</a>',
+    '<a href="/suggerer">Suggérer un sujet</a>',
+  );
+  return `<footer class="site-footer">\n      ${links.join("\n      ")}\n    </footer>`;
+}
+
+function renderTopicPinButton(topic, { pinnedByMe = false } = {}) {
+  const label = topic.label || topicLabel(topic.slug);
+  const action = pinnedByMe ? "Retirer" : "Épingler";
+  return `<button type="button" class="pin-toggle pin-toggle--topic" data-topic-slug="${escapeHtml(topic.slug)}" aria-pressed="${pinnedByMe ? "true" : "false"}" aria-label="${action} ${escapeHtml(label)}" title="${action} ${escapeHtml(label)}">
+      ${PIN_GLYPH_SVG}
+    </button>`;
 }
 
 function renderTopicPostCard(post, topic) {
@@ -224,12 +294,14 @@ function renderTopicPostCard(post, topic) {
   const createdAt = new Date(post.createdAt || Date.now());
 
   return `<article class="post">
-    <div class="post-meta">${escapeHtml(postSlot(post))} - ${escapeHtml(
-      new Intl.DateTimeFormat("fr-FR", { dateStyle: "full", timeStyle: "short" }).format(createdAt),
-    )} - ${escapeHtml(articleCountLabel(fr, intl))}</div>
+    <div class="post-meta">
+      <span class="post-meta-text">${escapeHtml(postSlot(post))} - ${escapeHtml(
+        new Intl.DateTimeFormat("fr-FR", { dateStyle: "full", timeStyle: "short" }).format(createdAt),
+      )} - ${escapeHtml(articleCountLabel(fr, intl))}</span>
+    </div>
     <h2>${escapeHtml(post.title)}</h2>
     <p class="summary">${escapeHtml(post.summary)}</p>
-    ${renderArticleSections(post, 8)}
+    ${renderArticleSections(post, { topicSlug: topic, limit: 8 })}
     <a class="read-more" href="/${encodeURIComponent(topic)}/recap/${encodeURIComponent(post.id)}">Voir le recap complet</a>
   </article>`;
 }
@@ -247,31 +319,50 @@ function metaTags({ title, description, canonical, ogType = "website", ogImage =
     `<meta property="og:description" content="${escapeHtml(description)}" />`,
     `<meta property="og:url" content="${escapeHtml(canonical)}" />`,
     `<meta property="og:image" content="${escapeHtml(ogImage)}" />`,
+    `<meta property="og:image:secure_url" content="${escapeHtml(ogImage)}" />`,
+    `<meta property="og:image:width" content="${SITE_OG_IMAGE_WIDTH}" />`,
+    `<meta property="og:image:height" content="${SITE_OG_IMAGE_HEIGHT}" />`,
+    `<meta property="og:image:alt" content="${escapeHtml(SITE_OG_IMAGE_ALT)}" />`,
     `<meta name="twitter:card" content="summary_large_image" />`,
     `<meta name="twitter:title" content="${escapeHtml(title)}" />`,
     `<meta name="twitter:description" content="${escapeHtml(description)}" />`,
     `<meta name="twitter:image" content="${escapeHtml(ogImage)}" />`,
+    `<meta name="twitter:image:alt" content="${escapeHtml(SITE_OG_IMAGE_ALT)}" />`,
   ];
+  if (GOOGLE_SITE_VERIFICATION) {
+    tags.push(`<meta name="google-site-verification" content="${escapeHtml(GOOGLE_SITE_VERIFICATION)}" />`);
+  }
   if (publishedTime) tags.push(`<meta property="article:published_time" content="${escapeHtml(publishedTime)}" />`);
   if (modifiedTime) tags.push(`<meta property="article:modified_time" content="${escapeHtml(modifiedTime)}" />`);
   return tags.join("\n    ");
 }
 
-async function renderHubPage() {
+async function renderHubPage({ ipHash } = {}) {
   const topics = await db.listTopics();
   const listed = topics.filter((topic) => topic.is_listed);
+  const pinnedSlugs = new Set(await db.getVisitorPinnedTopicSlugs(ipHash));
+  const sorted = [...listed].sort((a, b) => {
+    const aPinned = pinnedSlugs.has(a.slug) ? 0 : 1;
+    const bPinned = pinnedSlugs.has(b.slug) ? 0 : 1;
+    if (aPinned !== bPinned) return aPinned - bPinned;
+    return (b.label || topicLabel(b.slug)).localeCompare(a.label || topicLabel(a.slug), "fr");
+  });
   const totalPosts = listed.reduce((acc, topic) => acc + (topic.post_count || 0), 0);
-  const cards = listed
+  const cards = sorted
     .map((topic) => {
       const label = topic.label || topicLabel(topic.slug);
       const description = topic.description
         ? truncate(topic.description, 120)
-        : `${topic.post_count || 0} recap${topic.post_count > 1 ? "s" : ""} publie${topic.post_count > 1 ? "s" : ""}.`;
-      return `<a class="topic-card" href="/${escapeHtml(topic.slug)}" data-search="${escapeHtml(`${topic.slug} ${label}`)}">
-      <span>${topic.post_count > 0 ? "Actif" : "Bientot"}</span>
+        : `${topic.post_count || 0} recap${topic.post_count > 1 ? "s" : ""} publié${topic.post_count > 1 ? "s" : ""}.`;
+      const pinnedByMe = pinnedSlugs.has(topic.slug);
+      return `<div class="topic-card-shell${pinnedByMe ? " is-pinned" : ""}">
+      <a class="topic-card" href="/${escapeHtml(topic.slug)}" data-search="${escapeHtml(`${topic.slug} ${label}`)}">
+      <span>${topic.post_count > 0 ? "Actif" : "Bientôt"}</span>
       <strong>${escapeHtml(label)}</strong>
       <p>${escapeHtml(description)}</p>
-    </a>`;
+    </a>
+      ${renderTopicPinButton(topic, { pinnedByMe })}
+    </div>`;
     })
     .join("\n");
 
@@ -284,11 +375,7 @@ async function renderHubPage() {
     name: SITE_NAME,
     url: SITE_URL,
     description: SITE_DESCRIPTION,
-    potentialAction: {
-      "@type": "SearchAction",
-      target: `${SITE_URL}/{topic}?q={search_term_string}`,
-      "query-input": "required name=search_term_string",
-    },
+    inLanguage: "fr-FR",
   };
 
   const itemListJsonLd = {
@@ -309,9 +396,7 @@ async function renderHubPage() {
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>${escapeHtml(SITE_NAME)} - hub d'actualité multi-sujets</title>
     ${metaTags({ title: `${SITE_NAME} - hub d'actualité multi-sujets`, description: truncate(description), canonical })}
-    <link rel="icon" href="/favicon.ico" sizes="any" />
-    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <link rel="alternate" type="application/rss+xml" title="Sitemap" href="/sitemap.xml" />
+    ${renderFaviconLinks()}
     <link rel="stylesheet" href="/styles.css" />
     <script type="application/ld+json">${escapeJson(websiteJsonLd)}</script>
     <script type="application/ld+json">${escapeJson(itemListJsonLd)}</script>
@@ -321,16 +406,14 @@ async function renderHubPage() {
       <div>
         <h1 class="site-wordmark">PATCH-NOTES.FR</h1>
       </div>
-      <nav class="site-header-actions" aria-label="Navigation">
-        <a class="header-about-link" href="/a-propos">Mais c'est quoi ce site&nbsp;?</a>
-        <span id="status">${listed.length} sujet${listed.length > 1 ? "s" : ""}</span>
-      </nav>
+      ${renderSiteHeaderNav({ statusHtml: `<span id="status">${listed.length} sujet${listed.length > 1 ? "s" : ""}</span>` })}
     </header>
 
     <main class="posts">
       <section class="hub-intro">
-        <p class="summary"><strong>Ceci est un hub d'actualites</strong> | <em>Recaps generes par IA - des erreurs sont possibles, nous nous en excusons.</em></p><br>
-        <p>Pour chaque sujet, un patch automatique est publie a 6&nbsp;h, 11&nbsp;h, 18&nbsp;h et 23&nbsp;h.</p>
+        <p class="summary"><strong>Ceci est un hub d'actualités</strong> | <em>Récaps générés par IA — des erreurs sont possibles, nous nous en excusons.</em></p><br>
+        <p>Pour chaque sujet, un patch automatique est publié à 6&nbsp;h, 11&nbsp;h, 18&nbsp;h et 23&nbsp;h.</p>
+        <p class="hub-pin-hint">Épinglez vos sujets favoris pour les retrouver en haut de la liste.</p>
       </section>
 
       <label class="search-box hub-search">
@@ -343,11 +426,7 @@ async function renderHubPage() {
       </section>
     </main>
 
-    <footer class="site-footer">
-      <a href="/mentions-legales">Mentions legales</a>
-      <a href="/confidentialite">Confidentialite</a>
-      <a href="/conditions">Conditions</a>
-    </footer>
+    ${renderSiteFooter({ isHome: true })}
 
     <script src="/hub.js"></script>
   </body>
@@ -371,10 +450,10 @@ async function renderTopicPage(topicSlug) {
           return `${heading}${renderTopicPostCard(post, topicSlug)}`;
         })
         .join("\n")
-    : '<p class="empty">Aucun recap pour le moment. Lance le workflow n8n pour publier le premier.</p>';
+    : '<p class="empty">Aucun recap pour le moment. Le prochain passage automatique est à 6h, 11h, 18h ou 23h - ou lance `node automation/run-now.js &lt;slug&gt;` pour publier le premier.</p>';
 
   const canonical = `${SITE_URL}/${topicSlug}`;
-  const seoTitle = `${SITE_NAME}/${topicSlug} - veille ${label}`;
+  const seoTitle = `${label} — actualités et récaps | ${SITE_NAME}`;
   const seoDescription = page.posts[0]?.summary ? truncate(page.posts[0].summary) : truncate(description);
 
   const collectionJsonLd = {
@@ -416,8 +495,7 @@ async function renderTopicPage(topicSlug) {
     <title>${escapeHtml(seoTitle)}</title>
     ${metaTags({ title: seoTitle, description: seoDescription, canonical })}
     <link rel="alternate" type="application/rss+xml" title="${escapeHtml(SITE_NAME)} / ${escapeHtml(label)}" href="/${escapeHtml(topicSlug)}/feed.xml" />
-    <link rel="icon" href="/favicon.ico" sizes="any" />
-    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    ${renderFaviconLinks()}
     <link rel="stylesheet" href="/styles.css" />
     <script type="application/ld+json">${escapeJson(collectionJsonLd)}</script>
     <script type="application/ld+json">${escapeJson(itemListJsonLd)}</script>
@@ -426,13 +504,10 @@ async function renderTopicPage(topicSlug) {
   <body>
     <header class="site-header">
       <div>
-        <p class="eyebrow"><a class="subtle-link" href="/">${escapeHtml(SITE_NAME)}</a> / ${escapeHtml(topicSlug)}</p>
-        <h1>${escapeHtml(topicSlug)}</h1>
+        <p class="eyebrow"><a class="subtle-link" href="/">${escapeHtml(SITE_NAME)}</a> / ${escapeHtml(label)}</p>
+        <h1>${escapeHtml(label)}</h1>
       </div>
-      <nav class="site-header-actions" aria-label="Navigation">
-        <a class="header-about-link" href="/a-propos">Mais c'est quoi ce site&nbsp;?</a>
-        <span id="status">${page.total} recap${page.total > 1 ? "s" : ""}</span>
-      </nav>
+      ${renderSiteHeaderNav({ statusHtml: `<span id="status">${page.total} recap${page.total > 1 ? "s" : ""}</span>` })}
     </header>
 
     <main class="posts">
@@ -448,7 +523,9 @@ async function renderTopicPage(topicSlug) {
 
     <template id="post-template">
       <article class="post">
-        <div class="post-meta"></div>
+        <div class="post-meta">
+          <span class="post-meta-text"></span>
+        </div>
         <h2></h2>
         <p class="summary"></p>
         <div class="split">
@@ -466,23 +543,21 @@ async function renderTopicPage(topicSlug) {
     </template>
 
     <script src="/app.js"></script>
-    <footer class="site-footer">
-      <a href="/mentions-legales">Mentions legales</a>
-      <a href="/confidentialite">Confidentialite</a>
-      <a href="/conditions">Conditions</a>
-    </footer>
+    ${renderSiteFooter()}
   </body>
 </html>
 `;
 }
 
-function renderRecapPage(post, topicSlug) {
+function renderRecapPage(post, topicSlug, topicLabelText) {
+  const label = topicLabelText || topicLabel(topicSlug);
   const createdAt = new Date(post.createdAt || Date.now());
   const description = truncate(post.summary || post.title);
   const canonicalUrl = `${SITE_URL}/${topicSlug}/recap/${encodeURIComponent(post.id)}`;
   const title = `${post.title} | ${SITE_NAME}`;
   const { visible } = partitionArticles(post);
   const keywords = [
+    label,
     topicSlug,
     ...new Set(visible.map((article) => article.source).filter(Boolean)),
   ]
@@ -496,10 +571,10 @@ function renderRecapPage(post, topicSlug) {
     description,
     datePublished: createdAt.toISOString(),
     dateModified: createdAt.toISOString(),
-    mainEntityOfPage: canonicalUrl,
+    mainEntityOfPage: { "@type": "WebPage", "@id": canonicalUrl },
     url: canonicalUrl,
     inLanguage: "fr-FR",
-    articleSection: topicLabel(topicSlug),
+    articleSection: label,
     keywords,
     author: { "@type": "Organization", name: SITE_NAME, url: SITE_URL },
     publisher: {
@@ -509,11 +584,14 @@ function renderRecapPage(post, topicSlug) {
       logo: { "@type": "ImageObject", url: SITE_OG_IMAGE },
     },
     isPartOf: { "@type": "WebSite", name: SITE_NAME, url: SITE_URL },
-    about: { "@type": "Thing", name: topicLabel(topicSlug) },
+    about: { "@type": "Thing", name: label },
     citation: visible.slice(0, 10).map((article) => ({
-      "@type": "CreativeWork",
+      "@type": "NewsArticle",
       headline: article.title,
-      url: article.url,
+      url: article.landingPath
+        ? `${SITE_URL}${article.landingPath}`
+        : `${SITE_URL}${seoUrls.articlePublicPath(topicSlug, article)}`,
+      sameAs: article.url,
       author: { "@type": "Organization", name: article.source || "" },
     })),
   };
@@ -523,7 +601,7 @@ function renderRecapPage(post, topicSlug) {
     "@type": "BreadcrumbList",
     itemListElement: [
       { "@type": "ListItem", position: 1, name: "Accueil", item: SITE_URL },
-      { "@type": "ListItem", position: 2, name: topicLabel(topicSlug), item: `${SITE_URL}/${topicSlug}` },
+      { "@type": "ListItem", position: 2, name: label, item: `${SITE_URL}/${topicSlug}` },
       { "@type": "ListItem", position: 3, name: post.title, item: canonicalUrl },
     ],
   };
@@ -543,8 +621,7 @@ function renderRecapPage(post, topicSlug) {
       modifiedTime: createdAt.toISOString(),
     })}
     <meta name="news_keywords" content="${escapeHtml(keywords)}" />
-    <link rel="icon" href="/favicon.ico" sizes="any" />
-    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    ${renderFaviconLinks()}
     <link rel="stylesheet" href="/styles.css" />
     <script type="application/ld+json">${escapeJson(newsArticleJsonLd)}</script>
     <script type="application/ld+json">${escapeJson(breadcrumbJsonLd)}</script>
@@ -552,13 +629,10 @@ function renderRecapPage(post, topicSlug) {
   <body>
     <header class="site-header">
       <div>
-        <p class="eyebrow"><a class="subtle-link" href="/">${escapeHtml(SITE_NAME)}</a> / <a class="subtle-link" href="/${escapeHtml(topicSlug)}">${escapeHtml(topicSlug)}</a> / recap</p>
-        <h1><a class="brand-link" href="/${escapeHtml(topicSlug)}">${escapeHtml(topicSlug)}</a></h1>
+        <p class="eyebrow"><a class="subtle-link" href="/">${escapeHtml(SITE_NAME)}</a> / <a class="subtle-link" href="/${escapeHtml(topicSlug)}">${escapeHtml(label)}</a> / recap</p>
+        <h1>${escapeHtml(post.title)}</h1>
       </div>
-      <nav class="site-header-actions" aria-label="Navigation">
-        <a class="header-about-link" href="/a-propos">Mais c'est quoi ce site&nbsp;?</a>
-        <span id="status">${visible.length} article${visible.length > 1 ? "s" : ""}</span>
-      </nav>
+      ${renderSiteHeaderNav({ statusHtml: `<span id="status">${visible.length} article${visible.length > 1 ? "s" : ""}</span>` })}
     </header>
 
     <main class="posts">
@@ -568,31 +642,235 @@ function renderRecapPage(post, topicSlug) {
       </label>
       <section id="detail">
         <article class="post">
-          <div class="post-meta">${escapeHtml(topicSlug)} - ${escapeHtml(
+          <div class="post-meta">${escapeHtml(label)} - ${escapeHtml(
             new Intl.DateTimeFormat("fr-FR", { dateStyle: "full", timeStyle: "short" }).format(createdAt),
           )}</div>
-          <h2>${escapeHtml(post.title)}</h2>
+          <h2 class="visually-hidden">${escapeHtml(post.title)}</h2>
           <p class="summary">${escapeHtml(post.summary || "")}</p>
-          ${renderArticleSections(post)}
+          ${renderArticleSections(post, { topicSlug })}
         </article>
       </section>
     </main>
 
-    <script src="/detail.js"></script>
-    <footer class="site-footer">
-      <a href="/mentions-legales">Mentions legales</a>
-      <a href="/confidentialite">Confidentialite</a>
-      <a href="/conditions">Conditions</a>
-    </footer>
+    <script src="/detail.js" defer></script>
+    ${renderSiteFooter()}
   </body>
 </html>
 `;
+}
+
+function renderArticleLandingPage({ article, post, topicSlug, topicLabelText }) {
+  const label = topicLabelText || topicLabel(topicSlug);
+  const publishedAt = article.publishedAt ? new Date(article.publishedAt) : new Date(post.createdAt || Date.now());
+  const recapCreatedAt = new Date(post.createdAt || Date.now());
+  const canonicalUrl = `${SITE_URL}${article.landingPath || seoUrls.articlePublicPath(topicSlug, article)}`;
+  const description = truncate(article.snippet || `${article.title} — ${label} sur ${SITE_NAME}`);
+  const pageTitle = `${article.title} | ${SITE_NAME}`;
+  const recapUrl = `/${encodeURIComponent(topicSlug)}/recap/${encodeURIComponent(post.id)}`;
+
+  const newsArticleJsonLd = {
+    "@context": "https://schema.org",
+    "@type": "NewsArticle",
+    headline: article.title,
+    description,
+    datePublished: publishedAt.toISOString(),
+    dateModified: recapCreatedAt.toISOString(),
+    mainEntityOfPage: { "@type": "WebPage", "@id": canonicalUrl },
+    url: canonicalUrl,
+    inLanguage: "fr-FR",
+    articleSection: label,
+    author: article.source
+      ? { "@type": "Organization", name: article.source }
+      : { "@type": "Organization", name: SITE_NAME, url: SITE_URL },
+    publisher: {
+      "@type": "Organization",
+      name: SITE_NAME,
+      url: SITE_URL,
+      logo: { "@type": "ImageObject", url: SITE_OG_IMAGE },
+    },
+    isBasedOn: {
+      "@type": "WebPage",
+      url: article.url,
+      name: article.title,
+    },
+    isPartOf: {
+      "@type": "NewsArticle",
+      headline: post.title,
+      url: `${SITE_URL}${recapUrl}`,
+    },
+  };
+
+  const breadcrumbJsonLd = {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: [
+      { "@type": "ListItem", position: 1, name: "Accueil", item: SITE_URL },
+      { "@type": "ListItem", position: 2, name: label, item: `${SITE_URL}/${topicSlug}` },
+      { "@type": "ListItem", position: 3, name: post.title, item: `${SITE_URL}${recapUrl}` },
+      { "@type": "ListItem", position: 4, name: article.title, item: canonicalUrl },
+    ],
+  };
+
+  const publishedLabel = Number.isNaN(publishedAt.getTime())
+    ? ""
+    : new Intl.DateTimeFormat("fr-FR", { dateStyle: "full", timeStyle: "short" }).format(publishedAt);
+
+  return `<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>${escapeHtml(pageTitle)}</title>
+    ${metaTags({
+      title: pageTitle,
+      description,
+      canonical: canonicalUrl,
+      ogType: "article",
+      publishedTime: publishedAt.toISOString(),
+      modifiedTime: recapCreatedAt.toISOString(),
+    })}
+    ${renderFaviconLinks()}
+    <link rel="stylesheet" href="/styles.css" />
+    <script type="application/ld+json">${escapeJson(newsArticleJsonLd)}</script>
+    <script type="application/ld+json">${escapeJson(breadcrumbJsonLd)}</script>
+  </head>
+  <body>
+    <header class="site-header">
+      <div>
+        <p class="eyebrow"><a class="subtle-link" href="/">${escapeHtml(SITE_NAME)}</a> / <a class="subtle-link" href="/${escapeHtml(topicSlug)}">${escapeHtml(label)}</a> / actu</p>
+        <h1>${escapeHtml(article.title)}</h1>
+      </div>
+      ${renderSiteHeaderNav()}
+    </header>
+
+    <main class="posts article-landing">
+      <article class="post article-page">
+        <p class="article-meta">${escapeHtml(articleLabel(article))}${publishedLabel ? ` — ${escapeHtml(publishedLabel)}` : ""}</p>
+        ${article.snippet ? `<p class="summary">${escapeHtml(article.snippet)}</p>` : ""}
+        <p class="article-context">Cette actu est référencée dans le recap «&nbsp;${escapeHtml(post.title)}&nbsp;» publié le ${escapeHtml(
+          new Intl.DateTimeFormat("fr-FR", { dateStyle: "long" }).format(recapCreatedAt),
+        )}.</p>
+        <div class="article-actions">
+          <a class="read-more" href="${escapeHtml(recapUrl)}">Voir le recap complet</a>
+          ${
+            article.url
+              ? `<a class="article-source-link article-source-link--primary" href="${escapeHtml(article.url)}" target="_blank" rel="noopener noreferrer">Lire sur ${escapeHtml(article.source || "la source")} ↗</a>`
+              : ""
+          }
+        </div>
+      </article>
+    </main>
+
+    ${renderSiteFooter()}
+  </body>
+</html>
+`;
+}
+
+function renderPublicSuggestionRow(suggestion) {
+  const createdAt = new Date(suggestion.createdAt || Date.now());
+  const likedByMe = Boolean(suggestion.likedByMe);
+  const action = likedByMe ? "Retirer votre j'aime" : "J'aime cette proposition";
+  return `<article class="suggest-item" data-suggestion-id="${escapeHtml(suggestion.id)}">
+    <div class="suggest-item-body">
+      <p class="suggest-item-text">${escapeHtml(suggestion.text)}</p>
+      <p class="suggest-item-meta">${escapeHtml(
+        new Intl.DateTimeFormat("fr-FR", { dateStyle: "medium" }).format(createdAt),
+      )}</p>
+    </div>
+    <button type="button" class="suggest-like" data-suggestion-id="${escapeHtml(suggestion.id)}" aria-pressed="${likedByMe ? "true" : "false"}" aria-label="${action}" title="${action}">
+      <span class="suggest-like-icon" aria-hidden="true">♥</span>
+      <span class="suggest-like-count">${Number(suggestion.likeCount) || 0}</span>
+    </button>
+  </article>`;
+}
+
+async function renderSuggestPage(ipHash) {
+  const page = await db.listPublicSuggestions({ ipHash, limit: 100 });
+  const listHtml = page.suggestions.length
+    ? page.suggestions.map(renderPublicSuggestionRow).join("\n")
+    : '<p class="empty">Aucune proposition pour le moment. Soyez le premier à en envoyer une&nbsp;!</p>';
+
+  return `<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Suggérer un sujet - ${escapeHtml(SITE_NAME)}</title>
+    <meta name="description" content="Proposez un sujet à suivre sur ${escapeHtml(SITE_NAME)} et soutenez les idées des autres visiteurs." />
+    ${renderFaviconLinks()}
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <div>
+        <p class="eyebrow"><a class="subtle-link" href="/">${escapeHtml(SITE_NAME)}</a></p>
+        <h1>Suggérer un sujet</h1>
+      </div>
+      ${renderSiteHeaderNav()}
+    </header>
+    <main class="legal-page suggest-page">
+      <p class="suggest-intro">Proposez un sujet à suivre. Les visiteurs peuvent voter pour les idées qui leur plaisent.</p>
+
+      <form class="suggest-form" id="suggest-form" novalidate>
+        <label class="suggest-field">
+          <span>Suggestion</span>
+          <textarea id="suggest-text" name="text" rows="2" required maxlength="2000" placeholder="Ex. Formule E…"></textarea>
+        </label>
+
+        <div class="visually-hidden" aria-hidden="true">
+          <label for="suggest-hp">Laissez ce champ vide</label>
+          <input id="suggest-hp" name="hp" type="text" tabindex="-1" autocomplete="off" />
+        </div>
+
+        <button type="submit" class="read-more suggest-submit">Envoyer</button>
+
+        <p class="suggest-status" id="suggest-status" role="status" aria-live="polite"></p>
+      </form>
+
+      <section class="suggest-board" aria-labelledby="suggest-board-title">
+        <h2 id="suggest-board-title">Propositions des visiteurs</h2>
+        <p class="suggest-board-hint">Cliquez sur ♥ si une idée vous plaît — les plus soutenues remontent en haut.</p>
+        <div class="suggest-list" id="suggest-list">${listHtml}</div>
+      </section>
+    </main>
+
+    ${renderSiteFooter()}
+
+    <script src="/suggerer.js"></script>
+  </body>
+</html>`;
 }
 
 async function renderFeed(topicSlug) {
   const posts = await db.getRecentPostsForTopic(topicSlug, 30);
   const topic = await db.getTopic(topicSlug);
   const label = topic?.label || topicLabel(topicSlug);
+  const recapItems = posts
+    .map(
+      (post) => `    <item>
+      <title>${escapeXml(post.title)}</title>
+      <link>${escapeXml(`${SITE_URL}/${topicSlug}/recap/${encodeURIComponent(post.id)}`)}</link>
+      <guid isPermaLink="true">${escapeXml(`${SITE_URL}/${topicSlug}/recap/${encodeURIComponent(post.id)}`)}</guid>
+      <pubDate>${new Date(post.createdAt || Date.now()).toUTCString()}</pubDate>
+      <description>${escapeXml(post.summary || "")}</description>
+    </item>`,
+    )
+    .join("\n");
+
+  const articleItems = posts
+    .flatMap((post) => (post.articles || []).filter(isDisplayableArticle).slice(0, 12))
+    .map(
+      (article) => `    <item>
+      <title>${escapeXml(article.title)}</title>
+      <link>${escapeXml(`${SITE_URL}${article.landingPath || seoUrls.articlePublicPath(topicSlug, article)}`)}</link>
+      <guid isPermaLink="true">${escapeXml(`${SITE_URL}${article.landingPath || seoUrls.articlePublicPath(topicSlug, article)}`)}</guid>
+      <pubDate>${new Date(article.publishedAt || Date.now()).toUTCString()}</pubDate>
+      <description>${escapeXml(article.snippet || "")}</description>
+    </item>`,
+    )
+    .join("\n");
+
   return `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
   <channel>
@@ -601,17 +879,8 @@ async function renderFeed(topicSlug) {
     <atom:link href="${escapeXml(`${SITE_URL}/${topicSlug}/feed.xml`)}" rel="self" type="application/rss+xml" />
     <description>Recaps courts et sources pour ${escapeXml(label)}.</description>
     <language>fr-FR</language>
-${posts
-  .map(
-    (post) => `    <item>
-      <title>${escapeXml(post.title)}</title>
-      <link>${escapeXml(`${SITE_URL}/${topicSlug}/recap/${encodeURIComponent(post.id)}`)}</link>
-      <guid isPermaLink="true">${escapeXml(`${SITE_URL}/${topicSlug}/recap/${encodeURIComponent(post.id)}`)}</guid>
-      <pubDate>${new Date(post.createdAt || Date.now()).toUTCString()}</pubDate>
-      <description>${escapeXml(post.summary || "")}</description>
-    </item>`,
-  )
-  .join("\n")}
+${articleItems}
+${recapItems}
   </channel>
 </rss>
 `;
@@ -647,9 +916,9 @@ async function renderCoreSitemap() {
   const urls = [
     { loc: `${SITE_URL}/`, changefreq: "hourly", priority: "1.0" },
     { loc: `${SITE_URL}/a-propos`, changefreq: "monthly", priority: "0.4" },
+    { loc: `${SITE_URL}/suggerer`, changefreq: "daily", priority: "0.5" },
     { loc: `${SITE_URL}/mentions-legales`, changefreq: "yearly", priority: "0.2" },
     { loc: `${SITE_URL}/confidentialite`, changefreq: "yearly", priority: "0.2" },
-    { loc: `${SITE_URL}/conditions`, changefreq: "yearly", priority: "0.2" },
     ...topics.map((topic) => ({
       loc: `${SITE_URL}/${topic.slug}`,
       changefreq: "hourly",
@@ -664,9 +933,18 @@ async function renderCoreSitemap() {
 async function renderTopicSitemap(topicSlug) {
   const topic = await db.getTopic(topicSlug);
   if (!topic) return null;
-  const posts = await db.getRecentPostsForTopic(topicSlug, 5000);
+  const [posts, articles] = await Promise.all([
+    db.getRecentPostsForTopic(topicSlug, 5000),
+    db.listArticlesForTopicSitemap(topicSlug),
+  ]);
   const urls = [
     { loc: `${SITE_URL}/${topicSlug}`, changefreq: "hourly", priority: "0.9" },
+    ...articles.map((article) => ({
+      loc: `${SITE_URL}${article.landingPath}`,
+      lastmod: article.lastmod,
+      changefreq: "daily",
+      priority: "0.85",
+    })),
     ...posts.map((post) => ({
       loc: `${SITE_URL}/${topicSlug}/recap/${encodeURIComponent(post.id)}`,
       lastmod: new Date(post.createdAt || Date.now()).toISOString(),
@@ -728,8 +1006,9 @@ async function handleRequest(req, res) {
   }
 
   if (req.method === "GET" && url.pathname === "/") {
-    send(res, 200, await renderHubPage(), contentTypes[".html"], {
-      "cache-control": "public, max-age=60, s-maxage=120",
+    const ipHash = pins.hashIp(IP_HASH_SECRET, getClientIp(req));
+    send(res, 200, await renderHubPage({ ipHash }), contentTypes[".html"], {
+      "cache-control": "private, max-age=60",
     });
     return;
   }
@@ -788,6 +1067,81 @@ async function handleRequest(req, res) {
     return;
   }
 
+  const topicPinMatch = url.pathname.match(/^\/api\/topics\/([a-z0-9-]+)\/pin$/);
+  if (req.method === "POST" && topicPinMatch) {
+    const topicSlug = decodeURIComponent(topicPinMatch[1]);
+    const ipHash = pins.hashIp(IP_HASH_SECRET, getClientIp(req));
+    const result = await db.pinTopic(topicSlug, ipHash);
+    if (!result) {
+      send(res, 404, JSON.stringify({ error: "Topic not found" }));
+      return;
+    }
+    send(res, 200, JSON.stringify(result));
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/suggerer") {
+    const ipHash = pins.hashIp(IP_HASH_SECRET, getClientIp(req));
+    send(res, 200, await renderSuggestPage(ipHash), contentTypes[".html"], {
+      "cache-control": "private, max-age=60",
+    });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/suggestions") {
+    const body = await readJsonBody(req);
+    const ipHash = pins.hashIp(IP_HASH_SECRET, getClientIp(req));
+    const result = await db.createSuggestion({
+      text: body.text,
+      email: body.email,
+      honeypot: body.hp,
+      ipHash,
+    });
+
+    if (result.outcome === "honeypot") {
+      // Fake-success shape: never reveal to a bot that it tripped the trap.
+      send(res, 200, JSON.stringify({ ok: true }));
+      return;
+    }
+    if (result.outcome === "invalid") {
+      send(res, 400, JSON.stringify({ error: result.reason }));
+      return;
+    }
+    if (result.outcome === "rate-limited") {
+      send(res, 429, JSON.stringify({ error: "Trop de suggestions envoyées récemment. Réessayez plus tard." }));
+      return;
+    }
+    send(res, 201, JSON.stringify({ ok: true, suggestion: result.suggestion }));
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/suggestions") {
+    const ipHash = pins.hashIp(IP_HASH_SECRET, getClientIp(req));
+    const result = await db.listPublicSuggestions({
+      ipHash,
+      offset: url.searchParams.get("offset"),
+      limit: url.searchParams.get("limit"),
+    });
+    send(res, 200, JSON.stringify(result));
+    return;
+  }
+
+  const suggestionLikeMatch = url.pathname.match(/^\/api\/suggestions\/(\d+)\/like$/);
+  if (req.method === "POST" && suggestionLikeMatch) {
+    const ipHash = pins.hashIp(IP_HASH_SECRET, getClientIp(req));
+    try {
+      const result = await db.likeSuggestion(suggestionLikeMatch[1], ipHash);
+      if (!result) {
+        send(res, 404, JSON.stringify({ error: "Suggestion introuvable." }));
+        return;
+      }
+      send(res, 200, JSON.stringify(result));
+    } catch {
+      send(res, 400, JSON.stringify({ error: "Identifiant de suggestion invalide." }));
+    }
+    return;
+  }
+
   const sameDayMatch = url.pathname.match(/^\/api\/topics\/([a-z0-9-]+)\/same-day-urls$/);
   if (req.method === "GET" && sameDayMatch) {
     const day = url.searchParams.get("date") || new Date().toISOString().slice(0, 10);
@@ -802,25 +1156,9 @@ async function handleRequest(req, res) {
     return;
   }
 
-  if (req.method === "POST" && url.pathname === "/api/gemini/reserve") {
-    if (req.headers["x-blog-secret"] !== BLOG_SECRET) {
-      send(res, 401, JSON.stringify({ error: "Invalid blog secret" }));
-      return;
-    }
-    const body = await readJsonBody(req);
-    const result = await db.reserveGeminiSlot({
-      topicSlug: body.topicSlug || null,
-      maxPerMinute: body.maxPerMinute,
-      maxWaitSeconds: body.maxWaitSeconds,
-    });
-    send(res, 200, JSON.stringify(result));
-    return;
-  }
-
   const staticPages = {
     "/mentions-legales": "mentions-legales.html",
     "/confidentialite": "confidentialite.html",
-    "/conditions": "conditions.html",
     "/a-propos": "a-propos.html",
   };
   const staticPagePath = url.pathname.replace(/\/$/, "") || "/";
@@ -841,6 +1179,46 @@ async function handleRequest(req, res) {
     return;
   }
 
+  const actuMatch = url.pathname.match(/^\/([a-z0-9-]+)\/actu\/([^/]+)\/?$/);
+  if (req.method === "GET" && actuMatch) {
+    const topicSlug = actuMatch[1];
+    const articleId = seoUrls.parseArticlePublicSlug(actuMatch[2]);
+    if (!articleId) {
+      send(res, 404, "Article introuvable.", contentTypes[".txt"]);
+      return;
+    }
+    const landing = await db.getArticleForLanding(topicSlug, articleId);
+    if (!landing) {
+      send(res, 404, "Article introuvable.", contentTypes[".txt"]);
+      return;
+    }
+    const canonicalSlug = seoUrls.articlePublicSlug({
+      id: landing.article.id,
+      title: landing.article.title,
+    });
+    const requestSlug = decodeURIComponent(actuMatch[2]);
+    if (requestSlug !== canonicalSlug) {
+      sendRedirect(res, `${SITE_URL}/${topicSlug}/actu/${encodeURIComponent(canonicalSlug)}`);
+      return;
+    }
+    send(res, 200, renderArticleLandingPage({ ...landing, topicSlug, topicLabelText: landing.topic.label }), contentTypes[".html"], {
+      "cache-control": "public, max-age=3600, s-maxage=7200",
+    });
+    return;
+  }
+
+  if (req.method === "GET" && /^\/recap\/[^/]+\/?$/.test(url.pathname)) {
+    const id = decodeURIComponent(url.pathname.replace(/^\/recap\/|\/$/g, ""));
+    const post = await db.getPostById(id);
+    if (!post) {
+      send(res, 404, "Recap introuvable.", contentTypes[".txt"]);
+      return;
+    }
+    const topicSlug = post.topic || "esport";
+    sendRedirect(res, `${SITE_URL}/${topicSlug}/recap/${encodeURIComponent(id)}`);
+    return;
+  }
+
   if (req.method === "GET" && (url.pathname.startsWith("/recap/") || /^\/[a-z0-9-]+\/recap\//.test(url.pathname))) {
     const match = url.pathname.match(/^\/(?:(?<topic>[a-z0-9-]+)\/)?recap\/(?<id>[^/]+)\/?$/);
     const topicSlug = match?.groups?.topic || "esport";
@@ -850,7 +1228,8 @@ async function handleRequest(req, res) {
       send(res, 404, "Recap introuvable.", contentTypes[".txt"]);
       return;
     }
-    send(res, 200, renderRecapPage(post, topicSlug), contentTypes[".html"], {
+    const topic = await db.getTopic(topicSlug);
+    send(res, 200, renderRecapPage(post, topicSlug, topic?.label), contentTypes[".html"], {
       "cache-control": "public, max-age=300, s-maxage=600",
     });
     return;
@@ -859,7 +1238,7 @@ async function handleRequest(req, res) {
   if (req.method === "GET" && isPublicTopicPath(url.pathname)) {
     const topicSlug = url.pathname.replace(/^\/|\/$/g, "");
     send(res, 200, await renderTopicPage(topicSlug), contentTypes[".html"], {
-      "cache-control": "public, max-age=120, s-maxage=240",
+      "cache-control": "public, max-age=60, s-maxage=120",
     });
     return;
   }
@@ -908,21 +1287,15 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+let schedulerTasks = [];
+
 async function start() {
   await db.ensureSchema();
 
-  // Auto-déclare les sujets de référence pour que la home affiche les cartes
-  // même avant la première publication n8n. Le script n8n peut surcharger.
-  const seeds = [
-    { slug: "esport", label: "Esport", description: "Compétitions, rosters, tournois et scènes FR / internationales.", mode: "fr-intl" },
-  ];
-  for (const seed of seeds) {
-    try {
-      await db.upsertTopic(seed);
-    } catch (error) {
-      console.warn("[seed] topic", seed.slug, error.message);
-    }
-  }
+  // Les sujets (label, description, mode) sont upsertés par le scheduler lui
+  // même, depuis blog/automation/topics/configs/*.js, avant d'enregistrer
+  // leurs jobs cron - pas de seed statique ici.
+  schedulerTasks = await automation.startScheduler();
 
   server.listen(PORT, () => {
     console.log(`[blog] listening on http://0.0.0.0:${PORT}`);
@@ -931,6 +1304,7 @@ async function start() {
 
 function shutdown(signal) {
   console.log(`[blog] received ${signal}, shutting down`);
+  automation.stopScheduler(schedulerTasks);
   server.close(async () => {
     await db.close().catch((error) => console.error("[blog] close error", error));
     process.exit(0);

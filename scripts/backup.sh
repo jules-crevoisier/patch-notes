@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Backup quotidien des bases postgres (n8n + patch_notes) avec rotation.
+# Backup quotidien de la base Postgres du blog (patch_notes) avec rotation.
 # -----------------------------------------------------------------------------
 # Usage  :  ./scripts/backup.sh                # backup local dans ./backups
 #           BACKUP_DIR=/srv/backups ./scripts/backup.sh
@@ -39,11 +39,11 @@ dump() {
 	fi
 }
 
-dump "${POSTGRES_DB}"
-dump "${BLOG_DB:-patch_notes}"
+DB_NAME="${BLOG_DB:-${POSTGRES_DB:-patch_notes}}"
+dump "$DB_NAME"
 
-echo "==> Rotation (garde les ${BACKUP_KEEP} plus récents par base)"
-for db in "${POSTGRES_DB}" "${BLOG_DB:-patch_notes}"; do
+echo "==> Rotation (garde les ${BACKUP_KEEP} plus récents)"
+for db in "$DB_NAME"; do
 	# shellcheck disable=SC2010
 	ls -1t "$BACKUP_DIR"/"${db}"-*.sql.gz 2>/dev/null \
 		| tail -n +"$((BACKUP_KEEP + 1))" \

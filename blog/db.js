@@ -5,13 +5,21 @@
  * et sont appliquées par `prisma migrate deploy` au démarrage du conteneur.
  *
  * L'API exportée garde la même signature que la version pg brute, pour ne pas
- * impacter blog/server.js et les workflows n8n consommateurs.
+ * impacter blog/server.js et blog/automation/ (scheduler + pipeline de recap).
  */
 
 const { PrismaClient, Prisma } = require("@prisma/client");
 
+const pinsLib = require("./pins");
+const pinnedShelfLib = require("./pinned-shelf");
+const suggestionsLib = require("./suggestions");
+const seoUrls = require("./seo-urls");
+
 const VALID_MODES = new Set(["fr", "intl", "fr-intl"]);
 const TOPIC_PAGE_LIMIT_MAX = 30;
+const PINNED_SHELF_LIMIT_MAX = 6;
+const SUGGESTIONS_PAGE_LIMIT_MAX = 50;
+const SUGGESTION_RATE_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 const prisma = new PrismaClient({
   log: ["warn", "error"],
@@ -78,12 +86,18 @@ function postModelToApi(post) {
     summary: post.summary,
     slot: post.slot,
     mode: post.mode,
+    pinCount: post.pinCount ?? 0,
     sourceGroups: post.sourceGroups || {},
     errors: post.errors || [],
     debug: post.debug || {},
     articles: (post.articles || []).map((article) => ({
+      id: article.id.toString(),
       title: article.title,
       url: article.url,
+      landingPath: seoUrls.articlePublicPath(post.topicSlug, {
+        id: article.id,
+        title: article.title,
+      }),
       source: article.source,
       region: article.region,
       method: article.method,
@@ -301,7 +315,32 @@ async function getPostById(id) {
   return post ? postModelToApi(post) : null;
 }
 
-async function getTopicPostsPage(topicSlug, { offset = 0, limit = 8, query = "" } = {}) {
+/**
+ * Fixed order-by shape for the normal paginated/day-grouped post list.
+ *
+ * Deliberately ignores every argument: the normal list's ordering must never
+ * be influenced by pin state (ipHash, pinned flags, etc). The pinned shelf is
+ * a fully separate query (getPinnedTopicPosts) with its own ordering.
+ */
+function buildTopicPostsOrderBy() {
+  return [{ createdAt: "desc" }];
+}
+
+/**
+ * Looks up which of the given postIds the viewer behind `ipHash` has
+ * already pinned. Returns a Set for O(1) membership checks. No-ops (empty
+ * set) when ipHash isn't provided or there's nothing to check.
+ */
+async function findPinnedPostIds(ipHash, postIds) {
+  if (!ipHash || !postIds.length) return new Set();
+  const rows = await prisma.postPin.findMany({
+    where: { ipHash, postId: { in: postIds } },
+    select: { postId: true },
+  });
+  return new Set(rows.map((row) => row.postId));
+}
+
+async function getTopicPostsPage(topicSlug, { offset = 0, limit = 8, query = "", ipHash } = {}) {
   const safeOffset = Math.max(0, Number(offset) || 0);
   const safeLimit = Math.min(TOPIC_PAGE_LIMIT_MAX, Math.max(1, Number(limit) || 8));
   const tokens = normalizeSearch(query).split(" ").filter(Boolean);
@@ -318,25 +357,400 @@ async function getTopicPostsPage(topicSlug, { offset = 0, limit = 8, query = "" 
       : {}),
   };
 
-  const [posts, total] = await prisma.$transaction([
+  const [rows, total] = await prisma.$transaction([
     prisma.post.findMany({
       where: whereClause,
       include: { articles: { orderBy: { position: "asc" } } },
-      orderBy: { createdAt: "desc" },
+      orderBy: buildTopicPostsOrderBy(),
       take: safeLimit,
       skip: safeOffset,
     }),
     prisma.post.count({ where: whereClause }),
   ]);
 
+  const posts = rows.map(postModelToApi);
+  const pinnedIds = await findPinnedPostIds(ipHash, posts.map((post) => post.id));
+  for (const post of posts) post.pinnedByMe = pinnedIds.has(post.id);
+
   return {
-    posts: posts.map(postModelToApi),
+    posts,
     total,
     offset: safeOffset,
     limit: safeLimit,
     nextOffset: safeOffset + safeLimit,
     hasMore: safeOffset + safeLimit < total,
   };
+}
+
+/**
+ * Separate query for the pinned-posts shelf on a topic page. Never shares
+ * the normal list's orderBy/pagination - see buildTopicPostsOrderBy above.
+ *
+ * The DB query only filters to candidates (pinCount > 0 for this topic);
+ * the actual sort+cap rule is delegated to selectPinnedShelf (pinned-shelf.js)
+ * so that rule has exactly one implementation, tested in isolation, instead
+ * of being re-expressed a second time as separate Prisma query options.
+ */
+async function getPinnedTopicPosts(topicSlug, { limit = 6, ipHash } = {}) {
+  const safeLimit = Math.min(PINNED_SHELF_LIMIT_MAX, Math.max(1, Number(limit) || 6));
+
+  const candidates = await prisma.post.findMany({
+    where: { topicSlug, pinCount: { gt: 0 } },
+    select: { id: true, title: true, topicSlug: true, pinCount: true, createdAt: true },
+  });
+
+  const shelf = pinnedShelfLib.selectPinnedShelf(candidates, { limit: safeLimit });
+  const pinnedIds = await findPinnedPostIds(ipHash, shelf.map((post) => post.id));
+
+  return shelf.map((post) => ({
+    id: post.id,
+    title: post.title,
+    topic: post.topicSlug,
+    pinCount: post.pinCount,
+    pinnedByMe: pinnedIds.has(post.id),
+    createdAt: post.createdAt instanceof Date ? post.createdAt.toISOString() : post.createdAt,
+  }));
+}
+
+/**
+ * Toggles a (postId, ipHash) pin. Wraps the pure pins.pinToggle decision
+ * with the real Prisma read/write.
+ *
+ * Race-safety note: a plain findUnique-then-create/delete has a window where
+ * two concurrent requests for the same (postId, ipHash) both read the
+ * pre-write state, then one write fails against the unique index. Postgres
+ * aborts the WHOLE transaction on any statement error (25P02, "current
+ * transaction is aborted"), so recovering by issuing another query inside
+ * that same poisoned transaction just throws again - it doesn't help.
+ *
+ * Instead, the actual write is done as a single atomic raw statement that
+ * cannot throw on a concurrent duplicate in the first place:
+ *   - pin:   INSERT ... ON CONFLICT (post_id, ip_hash) DO NOTHING RETURNING id
+ *   - unpin: DELETE ... RETURNING id
+ * Both return zero rows (not an error) when a concurrent request already
+ * did the same thing first. The row count tells us whether *this* call
+ * actually changed anything, so pinCount is only ever incremented/
+ * decremented by whichever call truly won - no error path to catch, no
+ * poisoned transaction, and the toggle is idempotent under a race.
+ */
+/**
+ * Returns topic slugs pinned by this visitor (homepage favorites).
+ */
+async function getVisitorPinnedTopicSlugs(ipHash) {
+  if (!ipHash) return [];
+  const rows = await prisma.topicPin.findMany({
+    where: { ipHash },
+    orderBy: { createdAt: "desc" },
+    select: { topicSlug: true },
+  });
+  return rows.map((row) => row.topicSlug);
+}
+
+/**
+ * Toggles a (topicSlug, ipHash) pin for the homepage category shelf.
+ * Same atomic insert/delete pattern as pinPost (no public counter).
+ */
+async function pinTopic(topicSlug, ipHash) {
+  return prisma.$transaction(async (tx) => {
+    const topic = await tx.topic.findUnique({
+      where: { slug: topicSlug },
+      select: { slug: true, isListed: true },
+    });
+    if (!topic || !topic.isListed) return null;
+
+    const existingPin = await tx.topicPin.findUnique({
+      where: { topicSlug_ipHash: { topicSlug, ipHash } },
+    });
+
+    if (existingPin) {
+      await tx.$queryRaw`
+        DELETE FROM topic_pins WHERE topic_slug = ${topicSlug} AND ip_hash = ${ipHash}
+        RETURNING id
+      `;
+      return { pinned: false, slug: topicSlug };
+    }
+
+    await tx.$queryRaw`
+      INSERT INTO topic_pins (topic_slug, ip_hash)
+      VALUES (${topicSlug}, ${ipHash})
+      ON CONFLICT (topic_slug, ip_hash) DO NOTHING
+      RETURNING id
+    `;
+    return { pinned: true, slug: topicSlug };
+  });
+}
+
+async function pinPost(postId, ipHash) {
+  return prisma.$transaction(async (tx) => {
+    const post = await tx.post.findUnique({
+      where: { id: postId },
+      select: { id: true, pinCount: true },
+    });
+    if (!post) return null;
+
+    const existingPin = await tx.postPin.findUnique({
+      where: { postId_ipHash: { postId, ipHash } },
+    });
+
+    const decision = pinsLib.pinToggle({
+      postId,
+      ipHash,
+      existingPin,
+      currentPinCount: post.pinCount,
+    });
+
+    if (decision.action === "pinned") {
+      const inserted = await tx.$queryRaw`
+        INSERT INTO post_pins (post_id, ip_hash)
+        VALUES (${postId}, ${ipHash})
+        ON CONFLICT (post_id, ip_hash) DO NOTHING
+        RETURNING id
+      `;
+      if (inserted.length === 0) {
+        // A concurrent request already won the insert - no second increment.
+        const current = await tx.post.findUnique({ where: { id: postId }, select: { pinCount: true } });
+        return { pinned: true, pinCount: current?.pinCount ?? post.pinCount };
+      }
+      const updated = await tx.post.update({
+        where: { id: postId },
+        data: { pinCount: { increment: 1 } },
+        select: { pinCount: true },
+      });
+      return { pinned: true, pinCount: updated.pinCount };
+    }
+
+    const deleted = await tx.$queryRaw`
+      DELETE FROM post_pins WHERE post_id = ${postId} AND ip_hash = ${ipHash}
+      RETURNING id
+    `;
+    if (deleted.length === 0) {
+      // A concurrent request already unpinned it - idempotent no-op, matches
+      // the toggle's intended semantics instead of surfacing as an error.
+      const current = await tx.post.findUnique({ where: { id: postId }, select: { pinCount: true } });
+      return { pinned: false, pinCount: current?.pinCount ?? post.pinCount };
+    }
+    const updated = await tx.post.update({
+      where: { id: postId },
+      data: { pinCount: { decrement: 1 } },
+      select: { pinCount: true },
+    });
+    return { pinned: false, pinCount: updated.pinCount };
+  });
+}
+
+/**
+ * Evaluates + (maybe) persists a "/suggerer" submission.
+ *  - honeypot: fake-success shape, no DB write at all.
+ *  - invalid: returns the reason, nothing written.
+ *  - accept: rate-limit check against that ipHash's last-24h timestamps
+ *    BEFORE inserting.
+ */
+async function createSuggestion({ text, email, honeypot, ipHash }) {
+  const evaluation = suggestionsLib.evaluateSuggestionSubmission({ text, email, honeypot });
+
+  if (evaluation.outcome === "honeypot") {
+    return { outcome: "honeypot" };
+  }
+
+  if (evaluation.outcome === "invalid") {
+    return { outcome: "invalid", reason: evaluation.reason };
+  }
+
+  const since = new Date(Date.now() - SUGGESTION_RATE_WINDOW_MS);
+  const recent = await prisma.suggestion.findMany({
+    where: { ipHash, createdAt: { gte: since } },
+    select: { createdAt: true },
+  });
+
+  const rateCheck = suggestionsLib.checkSuggestionRateLimit(recent.map((row) => row.createdAt));
+  if (!rateCheck.allowed) {
+    return { outcome: "rate-limited" };
+  }
+
+  const created = await prisma.suggestion.create({
+    data: {
+      text: evaluation.text,
+      email: evaluation.email ?? null,
+      ipHash,
+    },
+  });
+
+  return {
+    outcome: "created",
+    suggestion: {
+      id: created.id.toString(),
+      text: created.text,
+      email: created.email,
+      likeCount: 0,
+      createdAt: created.createdAt.toISOString(),
+    },
+  };
+}
+
+async function listPublicSuggestions({ ipHash, offset = 0, limit = 50 } = {}) {
+  const safeOffset = Math.max(0, Number(offset) || 0);
+  const safeLimit = Math.min(100, Math.max(1, Number(limit) || 50));
+
+  const [rows, total] = await prisma.$transaction([
+    prisma.suggestion.findMany({
+      orderBy: [{ likeCount: "desc" }, { createdAt: "desc" }],
+      take: safeLimit,
+      skip: safeOffset,
+      select: {
+        id: true,
+        text: true,
+        likeCount: true,
+        createdAt: true,
+        likes: ipHash
+          ? {
+              where: { ipHash },
+              select: { id: true },
+              take: 1,
+            }
+          : false,
+      },
+    }),
+    prisma.suggestion.count(),
+  ]);
+
+  return {
+    suggestions: rows.map((row) => ({
+      id: row.id.toString(),
+      text: row.text,
+      likeCount: row.likeCount,
+      createdAt: row.createdAt.toISOString(),
+      likedByMe: ipHash ? row.likes.length > 0 : false,
+    })),
+    total,
+    offset: safeOffset,
+    limit: safeLimit,
+    nextOffset: safeOffset + safeLimit,
+    hasMore: safeOffset + safeLimit < total,
+  };
+}
+
+async function likeSuggestion(suggestionId, ipHash) {
+  return prisma.$transaction(async (tx) => {
+    const suggestion = await tx.suggestion.findUnique({
+      where: { id: BigInt(suggestionId) },
+      select: { id: true, likeCount: true },
+    });
+    if (!suggestion) return null;
+
+    const existingLike = await tx.suggestionLike.findUnique({
+      where: { suggestionId_ipHash: { suggestionId: suggestion.id, ipHash } },
+    });
+
+    const decision = pinsLib.pinToggle({
+      postId: suggestionId,
+      ipHash,
+      existingPin: existingLike,
+      currentPinCount: suggestion.likeCount,
+    });
+
+    if (decision.action === "pinned") {
+      const inserted = await tx.$queryRaw`
+        INSERT INTO suggestion_likes (suggestion_id, ip_hash)
+        VALUES (${suggestion.id}, ${ipHash})
+        ON CONFLICT (suggestion_id, ip_hash) DO NOTHING
+        RETURNING id
+      `;
+      if (inserted.length === 0) {
+        const current = await tx.suggestion.findUnique({
+          where: { id: suggestion.id },
+          select: { likeCount: true },
+        });
+        return { liked: true, likeCount: current?.likeCount ?? suggestion.likeCount };
+      }
+      const updated = await tx.suggestion.update({
+        where: { id: suggestion.id },
+        data: { likeCount: { increment: 1 } },
+        select: { likeCount: true },
+      });
+      return { liked: true, likeCount: updated.likeCount };
+    }
+
+    const deleted = await tx.$queryRaw`
+      DELETE FROM suggestion_likes WHERE suggestion_id = ${suggestion.id} AND ip_hash = ${ipHash}
+      RETURNING id
+    `;
+    if (deleted.length === 0) {
+      const current = await tx.suggestion.findUnique({
+        where: { id: suggestion.id },
+        select: { likeCount: true },
+      });
+      return { liked: false, likeCount: current?.likeCount ?? suggestion.likeCount };
+    }
+    const updated = await tx.suggestion.update({
+      where: { id: suggestion.id },
+      data: { likeCount: { decrement: 1 } },
+      select: { likeCount: true },
+    });
+    return { liked: false, likeCount: updated.likeCount };
+  });
+}
+
+async function getArticleForLanding(topicSlug, articleId) {
+  let id;
+  try {
+    id = BigInt(articleId);
+  } catch {
+    return null;
+  }
+
+  const row = await prisma.article.findFirst({
+    where: { id, post: { topicSlug } },
+    include: {
+      post: {
+        include: {
+          topic: true,
+          articles: { orderBy: { position: "asc" } },
+        },
+      },
+    },
+  });
+
+  if (!row) return null;
+
+  return {
+    article: {
+      id: row.id.toString(),
+      title: row.title,
+      url: row.url,
+      urlKey: row.urlKey,
+      source: row.source,
+      region: row.region,
+      method: row.method,
+      snippet: row.snippet,
+      publishedAt:
+        row.publishedAt instanceof Date ? row.publishedAt.toISOString() : row.publishedAt,
+      landingPath: seoUrls.articlePublicPath(topicSlug, { id: row.id, title: row.title }),
+    },
+    post: postModelToApi(row.post),
+    topic: topicRowToObject(row.post.topic),
+  };
+}
+
+async function listArticlesForTopicSitemap(topicSlug, limit = 50000) {
+  const safeLimit = Math.min(50000, Math.max(1, Number(limit) || 50000));
+  const rows = await prisma.article.findMany({
+    where: { post: { topicSlug } },
+    orderBy: [{ publishedAt: "desc" }, { id: "desc" }],
+    take: safeLimit,
+    select: {
+      id: true,
+      title: true,
+      publishedAt: true,
+      post: { select: { createdAt: true } },
+    },
+  });
+
+  return rows.map((row) => ({
+    id: row.id.toString(),
+    title: row.title,
+    landingPath: seoUrls.articlePublicPath(topicSlug, { id: row.id, title: row.title }),
+    lastmod: (row.publishedAt || row.post.createdAt).toISOString(),
+  }));
 }
 
 async function getRecentPostsForTopic(topicSlug, limit = 20) {
@@ -368,93 +782,6 @@ async function getSitemapEntries() {
   };
 }
 
-/**
- * Token bucket Gemini partagé entre tous les workflows n8n.
- *
- * Sémantique de quota: "max appels par minute glissante", soit au plus
- * `maxPerMinute` slots dans n'importe quelle fenêtre de 60 secondes.
- *
- * Algorithme de planification:
- *   1. Prend un verrou Postgres (pg_advisory_xact_lock) pour sérialiser les
- *      réservations concurrentes des workflows lancés sur le même cron tick.
- *   2. Lit toutes les réservations encore "vivantes" (called_at > NOW - 60s).
- *      Cela inclut les réservations futures déjà programmées.
- *   3. Si moins de `maxPerMinute` réservations sont vivantes, on insère
- *      immédiatement et on retourne waitMs = 0.
- *   4. Sinon on calcule le prochain slot libre: trier ASC, prendre l'élément
- *      d'index `len - maxPerMinute`, et programmer le nouvel appel à
- *      `cet_element.called_at + 60s + 200ms`. À ce moment-là, exactement
- *      (maxPerMinute - 1) appels seront encore dans la fenêtre.
- *
- * Conséquence: avec maxPerMinute=5 et 12 workflows lancés en même temps,
- * les 5 premiers passent immédiatement, les 5 suivants attendent ~60s,
- * les 2 derniers attendent ~120s. La file d'attente progresse minute par
- * minute sans jamais dépasser le quota Gemini.
- *
- * `maxWaitSeconds` est un garde-fou de sécurité: si le calcul donne un délai
- * supérieur (ex: bucket corrompu), on refuse la réservation pour éviter une
- * attente de plusieurs heures.
- */
-async function reserveGeminiSlot({ topicSlug = null, maxPerMinute = 5, maxWaitSeconds = 1800 }) {
-  const safeMax = Math.max(1, Math.min(60, Number(maxPerMinute) || 5));
-  const safeMaxWait = Math.max(0, Math.min(86_400, Number(maxWaitSeconds) || 1800));
-
-  return prisma.$transaction(async (tx) => {
-    await tx.$executeRawUnsafe("SELECT pg_advisory_xact_lock(424242);");
-    await tx.$executeRawUnsafe(
-      `DELETE FROM gemini_calls WHERE called_at < NOW() - INTERVAL '10 minutes';`,
-    );
-    const upcoming = await tx.$queryRawUnsafe(
-      `SELECT called_at FROM gemini_calls
-       WHERE called_at > NOW() - INTERVAL '60 seconds'
-       ORDER BY called_at ASC;`,
-    );
-
-    if (upcoming.length < safeMax) {
-      await tx.geminiCall.create({ data: { topicSlug } });
-      return {
-        ok: true,
-        waitMs: 0,
-        reserved: true,
-        used: upcoming.length + 1,
-        max: safeMax,
-        scheduledMinute: 0,
-      };
-    }
-
-    // Bucket plein dans la fenêtre courante. Le prochain slot libre est juste
-    // après que l'élément (len - maxPerMinute) sorte de la fenêtre 60s.
-    const cursor = upcoming[upcoming.length - safeMax].called_at;
-    const releaseAt = new Date(cursor.getTime() + 60_000 + 200);
-    const waitMs = Math.max(0, releaseAt.getTime() - Date.now());
-    const scheduledMinute = Math.max(1, Math.round(waitMs / 60_000));
-
-    if (waitMs > safeMaxWait * 1000) {
-      return {
-        ok: false,
-        waitMs,
-        reserved: false,
-        reason: "rate-limit-cap-exceeded",
-        used: upcoming.length,
-        max: safeMax,
-        scheduledMinute,
-      };
-    }
-
-    // Réservation différée: on enregistre l'appel au moment programmé pour
-    // que les workflows suivants voient ce slot comme déjà occupé.
-    await tx.geminiCall.create({ data: { topicSlug, calledAt: releaseAt } });
-    return {
-      ok: true,
-      waitMs,
-      reserved: true,
-      used: upcoming.length + 1,
-      max: safeMax,
-      scheduledMinute,
-    };
-  });
-}
-
 async function pingDb() {
   await prisma.$queryRawUnsafe("SELECT 1;");
 }
@@ -472,11 +799,20 @@ module.exports = {
   listTopics,
   createPost,
   getPostById,
+  buildTopicPostsOrderBy,
   getTopicPostsPage,
+  getPinnedTopicPosts,
+  getVisitorPinnedTopicSlugs,
+  pinTopic,
+  pinPost,
+  createSuggestion,
+  listPublicSuggestions,
+  likeSuggestion,
   getSameDayUrlKeys,
   getSitemapEntries,
   getRecentPostsForTopic,
-  reserveGeminiSlot,
+  getArticleForLanding,
+  listArticlesForTopicSitemap,
   pingDb,
   close,
 };

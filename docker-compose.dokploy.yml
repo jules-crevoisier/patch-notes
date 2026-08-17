@@ -1,0 +1,71 @@
+# =============================================================================
+# Production Dokploy — Docker Compose autonome
+# -----------------------------------------------------------------------------
+# Dans Dokploy : Compose path = docker-compose.dokploy.yml
+# Domaine : assigner patch-notes.fr → service `blog` port 3001 (HTTPS via Traefik)
+# =============================================================================
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-patch_notes}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB:-patch_notes}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  blog:
+    build:
+      context: ./blog
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "3001"
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${BLOG_DB:-${POSTGRES_DB:-patch_notes}}
+      DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-10}
+      BLOG_SECRET: ${BLOG_SECRET:?BLOG_SECRET requis}
+      IP_HASH_SECRET: ${IP_HASH_SECRET:?IP_HASH_SECRET requis}
+      SITE_URL: ${SITE_URL:?SITE_URL requis (https://ton-domaine)}
+      SITE_NAME: ${SITE_NAME:-patch-notes.fr}
+      SITE_DESCRIPTION: ${SITE_DESCRIPTION:-}
+      SITE_LOCALE: ${SITE_LOCALE:-fr_FR}
+      SITE_OG_IMAGE: ${SITE_OG_IMAGE:-}
+      GOOGLE_SITE_VERIFICATION: ${GOOGLE_SITE_VERIFICATION:-}
+      TZ: ${TZ:-Europe/Paris}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:?GEMINI_API_KEY requis}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-flash-latest}
+      GEMINI_MAX_PER_MINUTE: ${GEMINI_MAX_PER_MINUTE:-5}
+      GEMINI_MAX_WAIT_SECONDS: ${GEMINI_MAX_WAIT_SECONDS:-1800}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:3001/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  postgres_data:

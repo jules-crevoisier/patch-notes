@@ -1,4 +1,4 @@
--- Crée la base de données du blog (patch_notes) à côté de la base n8n.
+-- Crée la base patch_notes si POSTGRES_DB pointe vers une autre base (migration legacy).
 -- Ce script ne tourne qu'à la toute première initialisation de Postgres,
 -- quand le volume de données est vide.
 --

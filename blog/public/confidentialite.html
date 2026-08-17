@@ -3,36 +3,54 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Confidentialite - patch-notes.fr</title>
-    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <title>Confidentialité - patch-notes.fr</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/favicon.png" type="image/png" sizes="512x512" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" sizes="180x180" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <header class="site-header">
       <div>
         <p class="eyebrow"><a class="subtle-link" href="/">patch-notes.fr</a></p>
-        <h1>Confidentialite</h1>
+        <h1>Confidentialité</h1>
       </div>
       <nav class="site-header-actions" aria-label="Navigation">
-        <a class="header-about-link" href="/a-propos">Mais c'est quoi ce site&nbsp;?</a>
+        <a class="header-nav-link" href="/suggerer">Suggérer un sujet</a>
+        <a class="header-nav-link" href="/a-propos">Mais c'est quoi ce site&nbsp;?</a>
       </nav>
     </header>
     <main class="legal-page">
-      <p>patch-notes.fr ne depose pas de cookies publicitaires dans sa version actuelle et ne propose pas de compte utilisateur.</p>
-      <h2>Donnees traitees</h2>
-      <p>Les recherches effectuees dans l'interface restent cote navigateur. Les articles affiches proviennent des sources configurees dans l'automatisation n8n.</p>
+      <p><strong>patch-notes.fr</strong> ne dépose pas de cookies publicitaires dans sa version actuelle et ne propose pas de compte utilisateur.</p>
+
+      <h2>Données traitées</h2>
+      <p>Les recherches effectuées dans l'interface restent côté navigateur. Les articles affichés proviennent des sources configurées dans l'automatisation interne du blog.</p>
+
+      <h2>Épingler un sujet sur l'accueil</h2>
+      <p>Pour mémoriser vos sujets favoris sur la page d'accueil, l'adresse IP de la requête est transformée en empreinte irréversible (hachage HMAC) avant tout enregistrement&nbsp;: l'adresse IP en clair n'est jamais stockée. Cette empreinte sert uniquement à associer l'épingle à un même visiteur anonyme.</p>
+
+      <h2>Formulaire «&nbsp;Suggérer un sujet&nbsp;»</h2>
+      <p>Le formulaire <a href="/suggerer">/suggerer</a> collecte uniquement le texte de votre suggestion. Les propositions sont affichées publiquement sur cette page&nbsp;; les autres visiteurs peuvent indiquer qu'une idée leur plaît.</p>
+      <p>Pour éviter les doublons de vote, la même empreinte IP hashée sert aussi à mémoriser vos «&nbsp;j'aime&nbsp;» sur les propositions des autres visiteurs.</p>
+
+      <h2>Anti-spam</h2>
+      <p>La même empreinte IP hashée limite le nombre de suggestions envoyées depuis une même origine sur 24&nbsp;h.</p>
+
       <h2>Contact</h2>
-      <p>Pour toute demande relative aux donnees personnelles ou au contenu du site, vous pouvez ecrire a crevoisier.ju@gmail.com.</p>
+      <p>Pour toute demande relative aux données personnelles ou au contenu du site&nbsp;: <a href="mailto:crevoisier.ju@gmail.com">crevoisier.ju@gmail.com</a>.</p>
+
       <h2>Intelligence artificielle</h2>
-      <p>Les recaps peuvent etre generes ou aides par IA a partir de titres, extraits et liens publics. Ces traitements servent uniquement a produire une synthese editoriale courte.</p>
-      <h2>Evolution</h2>
-      <p>Si des comptes, formulaires, statistiques, cookies ou services tiers sont ajoutes, cette page sera mise a jour.</p>
+      <p>Les récaps peuvent être générés ou assistés par IA à partir de titres, extraits et liens publics. Ces traitements servent uniquement à produire une synthèse éditoriale courte.</p>
+
+      <h2>Évolution</h2>
+      <p>Si des comptes, statistiques, cookies ou services tiers sont ajoutés, cette page sera mise à jour.</p>
     </main>
     <footer class="site-footer">
       <a href="/">Accueil</a>
-      <a href="/mentions-legales">Mentions legales</a>
-      <a href="/conditions">Conditions</a>
+      <a href="/a-propos">Mais c'est quoi ce site ?</a>
+      <a href="/mentions-legales">Mentions légales</a>
+      <a href="/confidentialite">Confidentialité</a>
+      <a href="/suggerer">Suggérer un sujet</a>
     </footer>
   </body>
 </html>
