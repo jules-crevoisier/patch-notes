@@ -107,16 +107,27 @@ function appendArticle(target, article) {
   const item = document.createElement("li");
   const meta = document.createElement("span");
   const link = document.createElement("a");
+  const sourceLink = document.createElement("a");
 
   meta.className = "article-meta";
   meta.textContent = articleLabel(article);
 
-  link.href = article.url;
-  link.target = "_blank";
-  link.rel = "noreferrer";
+  link.href = article.landingPath || article.url;
+  if (!article.landingPath) {
+    link.target = "_blank";
+    link.rel = "noreferrer";
+  }
   link.textContent = article.title;
 
   item.append(meta, link);
+  if (article.url) {
+    sourceLink.className = "article-source-link";
+    sourceLink.href = article.url;
+    sourceLink.target = "_blank";
+    sourceLink.rel = "noopener noreferrer";
+    sourceLink.textContent = `Lire sur ${article.source || "la source"} ↗`;
+    item.append(sourceLink);
+  }
   target.append(item);
 }
 
@@ -184,7 +195,7 @@ function appendPost(post) {
   const frArticles = articlesToShow.filter((article) => article.region === "fr");
   const intlArticles = articlesToShow.filter((article) => article.region !== "fr");
 
-  node.querySelector(".post-meta").textContent = `${postSlot(post)} - ${formatter.format(createdAt)} - ${articleCountLabel(frArticles, intlArticles)}`;
+  node.querySelector(".post-meta-text").textContent = `${postSlot(post)} - ${formatter.format(createdAt)} - ${articleCountLabel(frArticles, intlArticles)}`;
   node.querySelector("h2").textContent = post.title;
   node.querySelector(".summary").textContent = post.summary;
   node.querySelector(".read-more").href = `/${currentTopic}/recap/${encodeURIComponent(post.id)}`;
@@ -220,7 +231,7 @@ function renderEmptyIfNeeded() {
   if (allPosts.length || isLoading) return;
   const empty = document.createElement("p");
   empty.className = "empty";
-  empty.textContent = currentQuery ? "Aucun recap ne correspond a cette recherche." : "Aucun recap pour le moment. Lance le workflow n8n pour publier le premier.";
+  empty.textContent = currentQuery ? "Aucun recap ne correspond a cette recherche." : "Aucun recap pour le moment. Le prochain passage automatique est a 6h, 11h, 18h ou 23h.";
   postsEl.append(empty);
 }
 
@@ -272,12 +283,6 @@ const onSearch = debounce(() => {
   currentQuery = searchEl.value.trim();
   loadMore({ reset: true });
 });
-
-document.title = `patch-notes.fr/${currentTopic}`;
-const title = document.querySelector("h1");
-const eyebrow = document.querySelector(".eyebrow");
-if (title) title.textContent = currentTopic;
-if (eyebrow) eyebrow.innerHTML = `<a class="subtle-link" href="/">patch-notes.fr</a> / ${currentTopic}`;
 
 searchEl.addEventListener("input", onSearch);
 

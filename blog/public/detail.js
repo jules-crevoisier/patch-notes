@@ -124,16 +124,27 @@ function appendArticles(target, articles) {
     const meta = document.createElement("span");
     const link = document.createElement("a");
     const snippet = document.createElement("p");
+    const sourceLink = document.createElement("a");
     meta.className = "article-meta";
     meta.textContent = [article.source, article.region === "fr" ? "FR" : "INT", articleTime(article)].filter(Boolean).join(" - ");
-    link.href = article.url;
-    link.target = "_blank";
-    link.rel = "noreferrer";
+    link.href = article.landingPath || article.url;
+    if (!article.landingPath) {
+      link.target = "_blank";
+      link.rel = "noreferrer";
+    }
     link.textContent = article.title;
     snippet.className = "article-snippet";
     snippet.textContent = article.snippet || "";
     item.append(meta, link);
     if (snippet.textContent) item.append(snippet);
+    if (article.url) {
+      sourceLink.className = "article-source-link";
+      sourceLink.href = article.url;
+      sourceLink.target = "_blank";
+      sourceLink.rel = "noopener noreferrer";
+      sourceLink.textContent = `Lire sur ${article.source || "la source"} ↗`;
+      item.append(sourceLink);
+    }
     target.append(item);
   }
 }
@@ -146,7 +157,6 @@ fetch(`/api/posts/${encodeURIComponent(id)}`, { cache: "no-store" })
   })
   .then((post) => {
     currentPost = post;
-    document.title = `${post.title} - patch-notes.fr/${post.topic || currentTopic}`;
     renderPost();
   })
   .catch(() => {

@@ -22,9 +22,8 @@ if (-not (Test-Path ".env")) {
 }
 
 $required = @(
-    "SITE_URL", "N8N_HOST",
-    "POSTGRES_PASSWORD", "BLOG_SECRET", "N8N_ENCRYPTION_KEY",
-    "N8N_BASIC_AUTH_USER", "N8N_BASIC_AUTH_PASSWORD", "GEMINI_API_KEY"
+    "SITE_URL",
+    "POSTGRES_PASSWORD", "BLOG_SECRET", "GEMINI_API_KEY"
 )
 $envContent = Get-Content .env
 $missing = @()
@@ -81,6 +80,4 @@ if ($Logs) {
 }
 
 $siteUrl = ($envContent | Where-Object { $_ -match "^SITE_URL=" }) -replace "^SITE_URL=", ""
-$n8nHost = ($envContent | Where-Object { $_ -match "^N8N_HOST=" }) -replace "^N8N_HOST=", ""
 Write-Host "==> OK : $siteUrl"
-Write-Host "    n8n  : https://$n8nHost"

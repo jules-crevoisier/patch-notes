@@ -8,9 +8,9 @@
 #
 # Prérequis serveur (une seule fois) :
 #   - VPS Debian/Ubuntu récent avec Apache + Certbot installés
-#   - Modules : a2enmod proxy proxy_http proxy_wstunnel headers deflate rewrite ssl remoteip
-#   - Vhosts Apache copiés depuis apache/sites-available/ (cf. apache/README.md)
-#   - DNS A/AAAA pointant vers le serveur pour le domaine du blog et N8N_HOST
+#   - Modules : a2enmod proxy proxy_http headers deflate rewrite ssl remoteip
+#   - Vhost Apache copié depuis apache/sites-available/ (cf. apache/README.md)
+#   - DNS A/AAAA pointant vers le serveur pour le domaine du blog
 #   - Docker Engine + Compose v2 (`docker compose version` doit afficher v2.x)
 #   - Fichier `.env` configuré (cf. .env.production.example)
 # =============================================================================
@@ -35,7 +35,7 @@ if [[ ! -f .env ]]; then
 fi
 
 # Vérifie les variables critiques (compose `:?` casserait avec un message peu clair).
-required=(SITE_URL N8N_HOST POSTGRES_PASSWORD BLOG_SECRET N8N_ENCRYPTION_KEY N8N_BASIC_AUTH_USER N8N_BASIC_AUTH_PASSWORD GEMINI_API_KEY)
+required=(SITE_URL POSTGRES_PASSWORD BLOG_SECRET GEMINI_API_KEY)
 missing=()
 for var in "${required[@]}"; do
 	if ! grep -qE "^${var}=.+" .env; then
@@ -55,7 +55,7 @@ if [[ "$NO_PULL" -eq 0 ]]; then
 	git pull --rebase --autostash
 fi
 
-echo "==> Pull des images de base (postgres, n8n, caddy)"
+echo "==> Pull des images de base (postgres)"
 "${COMPOSE[@]}" pull --ignore-buildable
 
 echo "==> Build du blog"
@@ -80,12 +80,6 @@ if [[ "${status:-}" != "healthy" ]]; then
 	exit 1
 fi
 
-echo "==> Resync des sujets n8n (templates + push + meta blog)"
-if [[ -f n8n-workflows/topics/sync.js ]]; then
-	"${COMPOSE[@]}" exec -T n8n sh -lc 'cd /workflows && node sync.js --no-restart' 2>/dev/null || \
-		echo "    (skip : workflows pas montés dans le conteneur, à lancer depuis l'hôte si besoin)"
-fi
-
 echo "==> État final"
 "${COMPOSE[@]}" ps
 
@@ -95,4 +89,3 @@ if [[ "$TAIL_LOGS" -eq 1 ]]; then
 fi
 
 echo "==> OK : $(grep -oP '(?<=^SITE_URL=).+' .env)"
-echo "    n8n  : https://$(grep -oP '(?<=^N8N_HOST=).+' .env)"

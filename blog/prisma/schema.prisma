@@ -23,9 +23,22 @@ model Topic {
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  posts Post[]
+  posts     Post[]
+  topicPins TopicPin[]
 
   @@map("topics")
+}
+
+model TopicPin {
+  id        BigInt   @id @default(autoincrement())
+  topicSlug String   @map("topic_slug")
+  ipHash    String   @map("ip_hash")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  topic Topic @relation(fields: [topicSlug], references: [slug], onDelete: Cascade)
+
+  @@unique([topicSlug, ipHash], map: "topic_pins_topic_ip_key")
+  @@map("topic_pins")
 }
 
 model Post {
@@ -39,14 +52,56 @@ model Post {
   errors       Json     @default("[]")
   debug        Json     @default("{}")
   searchText   String   @default("") @map("search_text")
+  pinCount     Int      @default(0) @map("pin_count")
   createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   topic    Topic     @relation(fields: [topicSlug], references: [slug], onDelete: Cascade)
   articles Article[]
+  pins     PostPin[]
 
   @@index([topicSlug, createdAt(sort: Desc)], map: "posts_topic_created_idx")
   @@index([createdAt(sort: Desc)], map: "posts_created_idx")
   @@map("posts")
+}
+
+model PostPin {
+  id        BigInt   @id @default(autoincrement())
+  postId    String   @map("post_id")
+  ipHash    String   @map("ip_hash")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@unique([postId, ipHash], map: "post_pins_post_ip_key")
+  @@map("post_pins")
+}
+
+model Suggestion {
+  id        BigInt   @id @default(autoincrement())
+  text      String
+  email     String?
+  ipHash    String   @map("ip_hash")
+  likeCount Int      @default(0) @map("like_count")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  likes SuggestionLike[]
+
+  @@index([createdAt(sort: Desc)], map: "suggestions_created_idx")
+  @@index([ipHash, createdAt], map: "suggestions_ip_created_idx")
+  @@index([likeCount(sort: Desc), createdAt(sort: Desc)], map: "suggestions_like_count_created_idx")
+  @@map("suggestions")
+}
+
+model SuggestionLike {
+  id           BigInt   @id @default(autoincrement())
+  suggestionId BigInt   @map("suggestion_id")
+  ipHash       String   @map("ip_hash")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  suggestion Suggestion @relation(fields: [suggestionId], references: [id], onDelete: Cascade)
+
+  @@unique([suggestionId, ipHash], map: "suggestion_likes_suggestion_ip_key")
+  @@map("suggestion_likes")
 }
 
 model Article {
@@ -67,13 +122,4 @@ model Article {
   @@index([postId], map: "articles_post_id_idx")
   @@index([urlKey], map: "articles_url_key_idx")
   @@map("articles")
-}
-
-model GeminiCall {
-  id        BigInt   @id @default(autoincrement())
-  calledAt  DateTime @default(now()) @map("called_at") @db.Timestamptz(6)
-  topicSlug String?  @map("topic_slug")
-
-  @@index([calledAt(sort: Desc)], map: "gemini_calls_called_at_idx")
-  @@map("gemini_calls")
 }

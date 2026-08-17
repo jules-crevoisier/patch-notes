@@ -19,7 +19,10 @@ RUN npx prisma generate
 
 FROM node:22-alpine AS runtime
 WORKDIR /app
-RUN apk add --no-cache openssl wget
+# tzdata : requis pour que le cron scheduler interne (blog/automation/scheduler.js)
+# résolve correctement le fuseau Europe/Paris (node-cron s'appuie sur l'IANA
+# tz database, absente par défaut d'alpine).
+RUN apk add --no-cache openssl wget tzdata
 ENV NODE_ENV=production \
     PORT=3001
 
@@ -31,8 +34,13 @@ COPY --from=builder --chown=blog:blog /app/node_modules/.prisma ./node_modules/.
 COPY --chown=blog:blog package.json ./
 COPY --chown=blog:blog server.js ./
 COPY --chown=blog:blog db.js ./
+COPY --chown=blog:blog seo-urls.js ./
+COPY --chown=blog:blog pins.js ./
+COPY --chown=blog:blog pinned-shelf.js ./
+COPY --chown=blog:blog suggestions.js ./
 COPY --chown=blog:blog prisma ./prisma
 COPY --chown=blog:blog public ./public
+COPY --chown=blog:blog automation ./automation
 
 USER blog
 EXPOSE 3001
@@ -40,4 +48,4 @@ EXPOSE 3001
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD wget -q -O - http://127.0.0.1:3001/health || exit 1
 
-CMD ["sh", "-c", "npx prisma migrate deploy && node server.js"]
+CMD ["sh", "-c", "npx prisma migrate deploy && exec node server.js"]

@@ -2,7 +2,7 @@
 
 Ce guide t'explique **comment ajouter un nouveau sujet de qualité** au hub patch-notes.fr, étape par étape, avec des exemples concrets.
 
-> Tout ce que tu modifies se trouve dans **un seul nœud n8n** : `📝 Configurer le sujet` du workflow dupliqué. Aucune autre modification n'est nécessaire.
+> Tout ce que tu modifies se trouve dans **un seul fichier** : `blog/automation/topics/configs/<slug>.js`. Édite-le, redémarre le conteneur blog, c'est tout — aucune autre modification n'est nécessaire.
 
 ---
 
@@ -10,11 +10,11 @@ Ce guide t'explique **comment ajouter un nouveau sujet de qualité** au hub patc
 
 | Champ | Règles | Exemples |
 | --- | --- | --- |
-| `slug` | minuscules, chiffres, tirets uniquement. Devient l'URL `/<slug>`. Court (≤ 18 caractères). | `esport`, `tech-ia`, `cinema-series`, `f1` |
+| `slug` | minuscules, chiffres, tirets uniquement. Devient l'URL `/<slug>` ET le nom du fichier `configs/<slug>.js`. Court (≤ 18 caractères). | `esport`, `tech-ia`, `cinema-series`, `f1` |
 | `label` | nom humain affiché dans les titres et le hub. Avec accents, espaces, slash autorisés. | `Esport`, `Tech / IA`, `Cinéma & Séries`, `F1` |
 | `description` | une phrase ≤ 120 caractères qui résume l'angle éditorial. | `Sorties, mises à jour majeures et signaux de fond du jeu vidéo.` |
 
-Le slug est définitif (les anciens recaps gardent leur URL). Le label et la description peuvent évoluer.
+Le slug est définitif (les anciens recaps gardent leur URL). Le label et la description peuvent évoluer. **Le `slug` déclaré dans le fichier doit correspondre exactement au nom du fichier** (`configs/tech-ia.js` → `slug: 'tech-ia'`) : `blog/automation/topics.js` refuse de démarrer sinon.
 
 ---
 
@@ -68,7 +68,7 @@ Toujours préférer un flux RSS direct quand le site en publie un. C'est moins b
 
 ### 3.2 Méthode Google News (si pas de RSS public)
 
-Quand un site n'a pas de RSS exposé, on passe par Google News qui propose un RSS de recherche par site + mots-clés. Le workflow construit l'URL automatiquement.
+Quand un site n'a pas de RSS exposé, on passe par Google News qui propose un RSS de recherche par site + mots-clés. `blog/automation/pipeline/load-topic.js` construit l'URL automatiquement.
 
 **Configuration :**
 
@@ -136,6 +136,7 @@ Règles :
 - **Tout en minuscules**, sans accents normalisés (le filtre est insensible à la casse mais pas aux accents — donc inclus les deux variantes : `cybersécurité` ET `cybersecurite`).
 - Mets les **noms propres** (entreprises, produits, équipes, jeux, événements) que tu veux suivre.
 - 15 à 40 termes est un bon ordre de grandeur.
+- Laisse le tableau **vide** (`[]`) si tes sources sont déjà très ciblées (le filtre négatif fait alors tout le travail) — c'est ce que fait le sujet `general`.
 
 ### 4.3 `negativeKeywords` (filtre **éliminatoire**)
 
@@ -190,42 +191,43 @@ Bon défaut : `{ google: 3, rss: 7 }` et `{ fr: 14, intl: 18, total: 36 }`.
 
 ## 6. Tester un nouveau sujet
 
-Une fois ton `TOPIC` modifié dans le nœud config, dans n8n :
+Une fois ton fichier `configs/<slug>.js` créé (via `new.js`, cf. `blog/automation/topics/README.md`) et rempli :
 
-1. Clique **« Test workflow »** en bas du canvas.
-2. Vérifie les sorties node par node :
-
-   | Nœud | Ce que tu dois voir |
-   | --- | --- |
-   | `Configurer le sujet` | un seul item avec `topic`, `sources`, `gemini`, `blog`. Vérifie que `topic.mode` et `sources` sont corrects. |
-   | `Charger URLs déjà publiées` | `{ urls: [...] }` (peut être vide). |
-   | `Préparer les sources` | un item par source ; `mode: 'fr'` doit en avoir filtré. |
-   | `Télécharger les flux` | tous les items ont une réponse non vide. Erreur HTTP 4xx → flux invalide. |
-   | `Assembler recap` | `postBase.articles.length > 0` si tes sources sont bonnes ; `errors[]` court ou vide. |
-   | `Réserver slot Gemini` | `{ ok: true, waitMs: 0 }` à vide, ou un délai cohérent si d'autres sujets tournent. |
-   | `Générer le mini recap` | réponse Gemini avec un JSON `{title, summary}` parsable. |
-   | `Publier sur le blog` | code `201` (créé) ou `200` (skipped si tous les articles étaient déjà publiés aujourd'hui). |
-
-3. Si tout est vert : **Active** le workflow. Il tournera ensuite à 06h, 11h, 18h, 23h.
+1. Redémarre le conteneur pour que le scheduler recharge la liste des sujets :
+   ```powershell
+   docker compose restart blog
+   ```
+2. Déclenche un run manuel immédiat, sans attendre le prochain créneau cron (6h/11h/18h/23h) :
+   ```powershell
+   docker compose exec blog node automation/run-now.js <slug>
+   ```
+   La sortie console affiche le résultat final (`{ status: 'created' | 'skipped' | 'error', ... }`) et, en cas d'échec, l'erreur qui a fait échouer le run.
+3. Vérifie le résultat publié :
+   - `GET http://localhost:3001/api/topics/<slug>/posts` → doit lister le nouveau recap.
+   - Ouvre `http://localhost:3001/<slug>` dans le navigateur.
+   - Le champ `errors[]` du post publié (visible via `GET /api/posts/:id`) contient les avertissements non-bloquants par source (ex. `"Numerama: aucun article Tech & IA retenu"`) — un post peut très bien être publié avec quelques erreurs de sources dedans, tant qu'au moins un article a été retenu ailleurs.
 
 ### Symptômes courants et fix
 
 | Symptôme | Cause probable | Fix |
 | --- | --- | --- |
 | `errors[]` plein de "aucun article retenu" | `positiveKeywords` trop restrictif | élargir, mettre des termes plus génériques |
-| `selectedArticlesCount` faible (< 5) | sources trop pauvres ou trop filtrées | ajouter 2-3 sources, alléger `negativeKeywords` |
+| Le post publié a très peu d'articles (< 5) | sources trop pauvres ou trop filtrées | ajouter 2-3 sources, alléger `negativeKeywords` |
 | Récaps avec articles hors-sujet | `negativeKeywords` insuffisant | ajouter les patterns parasites |
 | Tous les articles sont des "deals" | sources mal choisies (bons plans plutôt qu'éditorial) | retirer les flux marketing |
 | Gemini renvoie un titre fade et générique | `editorialHints` vide ou trop vague | ajouter 2-3 règles éditoriales précises |
+| `run-now.js` répond `{ status: 'error' }` | slug introuvable, ou config avec une erreur de syntaxe JS | vérifie que `slug` dans le fichier == nom du fichier, relis la trace d'erreur affichée |
 
 ---
 
 ## 7. Exemples prêts à coller
 
-### Esport (le sujet par défaut, déjà dans le template)
+Colle le contenu ci-dessous dans `blog/automation/topics/configs/<slug>.js` (crée d'abord le fichier avec `node blog/automation/topics/new.js <slug> ...`, ou remplace directement le squelette généré).
+
+### Esport (le sujet par défaut, déjà fourni)
 
 ```js
-const TOPIC = {
+module.exports = {
   slug: 'esport',
   label: 'Esport',
   description: 'Compétitions, rosters, tournois et scènes FR / internationales.',
@@ -252,7 +254,7 @@ const TOPIC = {
 ### Gaming
 
 ```js
-const TOPIC = {
+module.exports = {
   slug: 'gaming',
   label: 'Gaming',
   description: 'Sorties, mises à jour majeures et signaux de fond du jeu vidéo.',
@@ -278,7 +280,7 @@ const TOPIC = {
 ### Tech / IA
 
 ```js
-const TOPIC = {
+module.exports = {
   slug: 'tech-ia',
   label: 'Tech / IA',
   description: 'IA, plateformes, produits, régulation et signaux de fond tech.',
@@ -304,7 +306,7 @@ const TOPIC = {
 ### Cinéma / Séries (FR + INT)
 
 ```js
-const TOPIC = {
+module.exports = {
   slug: 'cinema-series',
   label: 'Cinéma & Séries',
   description: 'Sorties, plateformes, casting, festivals et décisions de production.',
@@ -328,7 +330,7 @@ const TOPIC = {
 ### F1 (uniquement FR)
 
 ```js
-const TOPIC = {
+module.exports = {
   slug: 'f1',
   label: 'Formule 1',
   description: 'Grands prix, écuries, pilotes, qualifications et marché des transferts.',
@@ -352,13 +354,13 @@ const TOPIC = {
 
 ## 8. Comportement Gemini avec plusieurs sujets
 
-Tous tes sujets se déclenchent aux mêmes horaires (06h, 11h, 18h, 23h). Pour respecter le quota Gemini, le blog joue le rôle d'un **distributeur de tickets** :
+Tous tes sujets se déclenchent aux mêmes horaires (06h, 11h, 18h, 23h). Pour respecter le quota Gemini, `blog/automation/gemini-queue.js` joue le rôle d'un **distributeur de tickets en mémoire**, dans le process blog :
 
-| Quota = 5 RPM | Topic 1-5 | Topic 6-10 | Topic 11-15 | Topic 16-20 |
+| Quota = 5 RPM | Sujet 1-5 | Sujet 6-10 | Sujet 11-15 | Sujet 16-20 |
 | --- | --- | --- | --- | --- |
 | Attente avant Gemini | 0 s | ~60 s | ~120 s | ~180 s |
 | Récap publié | T+0 | T+1 min | T+2 min | T+3 min |
 
-Avec 30 sujets et 5 RPM, le dernier publie ~6 minutes après le déclenchement. Tous passent par Gemini, **aucun ne tombe en fallback**.
+Avec 30 sujets et 5 RPM, le dernier publie ~6 minutes après le déclenchement. Tous passent par Gemini, **aucun ne tombe en fallback** (tant que le délai calculé reste sous `GEMINI_MAX_WAIT_SECONDS`).
 
-Si tu veux accélérer : passe à un plan Gemini payant (250 RPM sur Tier 1) puis monte `GEMINI_MAX_PER_MINUTE` dans `.env`. Aucun changement à faire dans les workflows.
+Si tu veux accélérer : passe à un plan Gemini payant (250 RPM sur Tier 1) puis monte `GEMINI_MAX_PER_MINUTE` dans `.env`, puis `docker compose restart blog`. Aucun changement à faire dans les fichiers de config des sujets.
