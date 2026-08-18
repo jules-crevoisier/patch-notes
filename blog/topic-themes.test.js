@@ -8,6 +8,9 @@ const {
   renderTopicWheel,
   buildThemeCss,
   topicBodyClass,
+  familyLandingDegrees,
+  nextSpinAngle,
+  pickRandomFamilyId,
 } = require("./topic-themes");
 
 test("should return a distinct theme for known topic slugs", () => {
@@ -85,12 +88,38 @@ test("should omit missing topics from the wheel", () => {
   assert.equal(slices[0].endAngle - slices[0].startAngle, 360);
 });
 
-test("should render a wheel with family data and a reset hub", () => {
+test("should render a wheel with family data and a random hub", () => {
   const html = renderTopicWheel([{ slug: "f1", label: "Formule 1" }]);
   assert.match(html, /data-family="competition"/);
   assert.match(html, /Tire une couleur/);
-  assert.match(html, /Tous les sujets/);
+  assert.match(html, /Tirage au sort/);
+  assert.match(html, />\?<\/text>/);
+  assert.match(html, /data-random="true"/);
   assert.match(html, /data-families="/);
+  assert.match(html, /data-landings="/);
+  assert.doesNotMatch(html, /topic-wheel__pointer/);
+});
+
+test("should compute a clockwise landing angle for a family wedge", () => {
+  assert.equal(familyLandingDegrees(6, 0), 330);
+  assert.equal(familyLandingDegrees(6, 1), 270);
+});
+
+test("should always add extra turns so a random spin stays visible", () => {
+  assert.equal(nextSpinAngle(0, 330, 6), 2490);
+  const alreadyLanded = nextSpinAngle(2490, 330, 6);
+  assert.ok(alreadyLanded - 2490 >= 2160);
+});
+
+test("should pick another family than the one already selected", () => {
+  const pick = pickRandomFamilyId(["arene", "ecrans"], "arene", () => 0);
+  assert.equal(pick, "ecrans");
+});
+
+test("should emit dark-mode topic accents for system theme", () => {
+  const css = buildThemeCss();
+  assert.match(css, /prefers-color-scheme:\s*dark/);
+  assert.match(css, /--topic-accent:#3dbaa4/);
 });
 
 test("should build body attributes with slug", () => {
