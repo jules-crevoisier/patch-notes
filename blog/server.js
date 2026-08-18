@@ -113,6 +113,20 @@ function getClientIp(req) {
   return req.headers["x-real-ip"] || req.socket.remoteAddress || "";
 }
 
+function readCookie(req, name) {
+  const header = String(req.headers.cookie || "");
+  const match = header.match(new RegExp(`(?:^|;\\s*)${name}=([^;]+)`));
+  return match ? decodeURIComponent(match[1]) : "";
+}
+
+function resolvePinIdentity(req) {
+  const visitorId = String(req.headers["x-visitor-id"] || readCookie(req, "pn_vid") || "").trim();
+  if (pins.isValidVisitorId(visitorId)) {
+    return pins.hashVisitorId(IP_HASH_SECRET, visitorId);
+  }
+  return pins.hashIp(IP_HASH_SECRET, getClientIp(req));
+}
+
 function topicLabel(topic) {
   const acronyms = new Set(["ai", "api", "ia", "seo", "tv", "vr"]);
   return String(topic || "")
@@ -428,6 +442,7 @@ async function renderHubPage({ ipHash } = {}) {
 
     ${renderSiteFooter({ isHome: true })}
 
+    <script src="/pin-store.js"></script>
     <script src="/hub.js"></script>
   </body>
 </html>
@@ -1006,7 +1021,7 @@ async function handleRequest(req, res) {
   }
 
   if (req.method === "GET" && url.pathname === "/") {
-    const ipHash = pins.hashIp(IP_HASH_SECRET, getClientIp(req));
+    const ipHash = resolvePinIdentity(req);
     send(res, 200, await renderHubPage({ ipHash }), contentTypes[".html"], {
       "cache-control": "private, max-age=60",
     });
@@ -1067,10 +1082,17 @@ async function handleRequest(req, res) {
     return;
   }
 
+  if (req.method === "GET" && url.pathname === "/api/topics/pinned") {
+    const ipHash = resolvePinIdentity(req);
+    const slugs = await db.getVisitorPinnedTopicSlugs(ipHash);
+    send(res, 200, JSON.stringify({ slugs }));
+    return;
+  }
+
   const topicPinMatch = url.pathname.match(/^\/api\/topics\/([a-z0-9-]+)\/pin$/);
   if (req.method === "POST" && topicPinMatch) {
     const topicSlug = decodeURIComponent(topicPinMatch[1]);
-    const ipHash = pins.hashIp(IP_HASH_SECRET, getClientIp(req));
+    const ipHash = resolvePinIdentity(req);
     const result = await db.pinTopic(topicSlug, ipHash);
     if (!result) {
       send(res, 404, JSON.stringify({ error: "Topic not found" }));

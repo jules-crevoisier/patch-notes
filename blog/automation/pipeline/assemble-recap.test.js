@@ -90,3 +90,37 @@ test("should produce zero articles and no gemini request when every fetched sour
   assert.equal(typeof result.fallbackTitle, "string");
   assert.equal(typeof result.fallbackSummary, "string");
 });
+
+test("should reject a lequipe football article that falsely matched lec inside selectionneur", () => {
+  const topic = {
+    slug: "esport",
+    label: "Esport",
+    positiveKeywords: ["lec", "esport", "valorant", "counter-strike"],
+    negativeKeywords: ["football", "sélectionneur"],
+    urlBlockPatterns: [/lequipe\.fr\/football/i],
+    maxAgeDays: { google: 3, rss: 7 },
+    caps: { fr: 14, intl: 18, total: 36 },
+  };
+
+  const fetchedSources = [
+    {
+      source: {
+        name: "L'Équipe Esport",
+        region: "fr",
+        method: "google",
+        max: 4,
+        urlAllowPatterns: [/lequipe\.fr\/esport/i],
+      },
+      xml: rssXml([
+        {
+          title: "« Le confort est rarement bon conseiller » : ex-sélectionneur de la Belgique, Rudi Garcia lève le voile",
+          url: "https://www.lequipe.fr/Football/Article/-le-confort-est-rarement-bon-conseiller/1711685",
+        },
+      ]),
+      ok: true,
+    },
+  ];
+
+  const result = assembleRecap({ topic, fetchedSources, sameDayUrlKeys: [] });
+  assert.equal(result.postBase.articles.length, 0);
+});

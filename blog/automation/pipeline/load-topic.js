@@ -46,6 +46,8 @@ function buildTopicRuntimeConfig(rawTopic) {
       method: source.method,
       max: Number(source.max || 5),
       url: source.method === "google" ? buildGoogleNewsUrl(source.siteDomain || source.url, TOPIC.searchTerms || "") : source.url,
+      urlAllowPatterns: source.urlAllowPatterns || [],
+      urlBlockPatterns: source.urlBlockPatterns || [],
     }));
 
   const topic = {
@@ -56,6 +58,7 @@ function buildTopicRuntimeConfig(rawTopic) {
     searchTerms: String(TOPIC.searchTerms || "").trim(),
     positiveKeywords: TOPIC.positiveKeywords || [],
     negativeKeywords: TOPIC.negativeKeywords || [],
+    urlBlockPatterns: TOPIC.urlBlockPatterns || [],
     maxAgeDays: {
       google: Number(TOPIC.maxAgeDays?.google ?? 3),
       rss: Number(TOPIC.maxAgeDays?.rss ?? 7),

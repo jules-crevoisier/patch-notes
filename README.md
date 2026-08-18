@@ -159,7 +159,9 @@ Algorithme :
 3. Sinon, le prochain slot libre est calculé juste après que le `(len - max)`-ième appel sorte de la fenêtre 60s (`+60s +200ms` de marge).
 4. `GEMINI_MAX_WAIT_SECONDS` est le garde-fou : si le délai calculé dépasse cette borne, l'appel est refusé (`{ ok: false, reason: 'rate-limit-cap-exceeded' }`) **sans jamais appeler Gemini**, et le sujet publie son fallback éditorial (sans IA).
 
-Tu peux ajuster `GEMINI_MAX_PER_MINUTE` dans `.env` selon ton plan Gemini (free = 5, Tier 1 payant = 250).
+Modèle recommandé en prod : `gemini-3.1-flash-lite` (GA, épinglé). Évite `gemini-flash-latest` : l’alias pointe vers des versions récentes avec quotas RPD très bas (ex. 20/jour) — insuffisant pour ~12 sujets × 4 créneaux.
+
+Tu peux ajuster `GEMINI_MAX_PER_MINUTE` selon ton tier (free `gemini-3.1-flash-lite` = 15 RPM).
 
 ## Endpoints API
 

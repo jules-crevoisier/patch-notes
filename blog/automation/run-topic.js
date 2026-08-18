@@ -66,7 +66,7 @@ async function runTopicRecap(topicSlug, deps = {}) {
         () =>
           callGemini({
             apiKey: process.env.GEMINI_API_KEY || "",
-            model: process.env.GEMINI_MODEL || "gemini-2.5-flash",
+            model: process.env.GEMINI_MODEL || "gemini-3.1-flash-lite",
             request: geminiRequest,
           }),
         { topicSlug },

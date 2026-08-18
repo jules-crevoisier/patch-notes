@@ -20,7 +20,7 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
 
-const { hashIp, pinToggle, normalizeIp } = require("./pins");
+const { hashIp, hashVisitorId, isValidVisitorId, pinToggle, normalizeIp } = require("./pins");
 
 test("should deterministically return the same HMAC-SHA256 hex digest for the same secret and IP when hashIp is called twice", () => {
   const secret = "shelf-secret";
@@ -91,6 +91,22 @@ test("should remove the pin and decrement the count by 1 when toggling an alread
   });
 
   assert.deepEqual(result, { action: "unpinned", pinCountDelta: -1 });
+});
+
+test("should hash visitor ids to a stable opaque key", () => {
+  const secret = "test-secret";
+  const a = hashVisitorId(secret, "abc123def4567890");
+  const b = hashVisitorId(secret, "abc123def4567890");
+  const c = hashVisitorId(secret, "other-visitor-id-999");
+  assert.equal(a, b);
+  assert.notEqual(a, c);
+  assert.match(a, /^[a-f0-9]{64}$/);
+});
+
+test("should accept only plausible visitor id shapes", () => {
+  assert.equal(isValidVisitorId("abc123def4567890"), true);
+  assert.equal(isValidVisitorId("too-short"), false);
+  assert.equal(isValidVisitorId(""), false);
 });
 
 test("should not double-increment the pin count when two concurrent toggle attempts race against the same uniqueness-guarded record", () => {

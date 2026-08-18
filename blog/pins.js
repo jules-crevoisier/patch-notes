@@ -35,6 +35,15 @@ function hashIp(secret, rawIp) {
   return crypto.createHmac("sha256", secret).update(normalizeIp(rawIp)).digest("hex");
 }
 
+/** Stable visitor key from a client-generated id (localStorage + cookie). */
+function hashVisitorId(secret, visitorId) {
+  return crypto.createHmac("sha256", secret).update(`visitor:${String(visitorId || "").trim()}`).digest("hex");
+}
+
+function isValidVisitorId(visitorId) {
+  return /^[a-f0-9-]{16,64}$/i.test(String(visitorId || "").trim());
+}
+
 function pinToggle({ postId, ipHash, existingPin, currentPinCount } = {}) {
   if (existingPin) {
     return { action: "unpinned", pinCountDelta: -1 };
@@ -42,4 +51,4 @@ function pinToggle({ postId, ipHash, existingPin, currentPinCount } = {}) {
   return { action: "pinned", pinCountDelta: 1 };
 }
 
-module.exports = { hashIp, pinToggle, normalizeIp };
+module.exports = { hashIp, hashVisitorId, isValidVisitorId, pinToggle, normalizeIp };

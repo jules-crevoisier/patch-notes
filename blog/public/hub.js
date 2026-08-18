@@ -1,6 +1,7 @@
 const search = document.querySelector("#topic-search");
 const topicShells = [...document.querySelectorAll(".topic-card-shell")];
 const statusEl = document.querySelector("#status");
+const pinStore = window.PatchNotesPinStore;
 
 function normalize(value = "") {
   return value
@@ -42,6 +43,22 @@ function reorderPinnedTopics() {
   for (const shell of shells) grid.append(shell);
 }
 
+function applyPinnedSlugs(slugs) {
+  const pinned = new Set(slugs);
+  document.querySelectorAll(".pin-toggle--topic").forEach((button) => {
+    const slug = button.dataset.topicSlug;
+    if (!slug) return;
+    setTopicPinState(button, { pinned: pinned.has(slug) });
+  });
+  reorderPinnedTopics();
+}
+
+async function refreshPinnedTopics() {
+  if (!pinStore) return;
+  const slugs = await pinStore.syncPins();
+  applyPinnedSlugs(slugs);
+}
+
 function wireTopicPinButton(button) {
   if (!button || button.dataset.wired === "true") return;
   button.dataset.wired = "true";
@@ -53,15 +70,25 @@ function wireTopicPinButton(button) {
     const topicSlug = button.dataset.topicSlug;
     if (!topicSlug || button.disabled) return;
 
+    const nextPinned = button.getAttribute("aria-pressed") !== "true";
+    if (pinStore) pinStore.setLocalPin(topicSlug, nextPinned);
+    setTopicPinState(button, { pinned: nextPinned });
+    reorderPinnedTopics();
+
     button.disabled = true;
     try {
-      const response = await fetch(`/api/topics/${encodeURIComponent(topicSlug)}/pin`, { method: "POST" });
+      const headers = pinStore ? pinStore.pinHeaders() : {};
+      const response = await fetch(`/api/topics/${encodeURIComponent(topicSlug)}/pin`, {
+        method: "POST",
+        headers,
+      });
       if (!response.ok) throw new Error("topic pin request failed");
       const result = await response.json();
+      if (pinStore) pinStore.setLocalPin(topicSlug, Boolean(result.pinned));
       setTopicPinState(button, result);
       reorderPinnedTopics();
     } catch {
-      // Keep prior visible state when the request fails.
+      // Keep optimistic local state when offline — localStorage is the fallback.
     } finally {
       button.disabled = false;
     }
@@ -86,3 +113,8 @@ function renderTopics() {
 search.addEventListener("input", renderTopics);
 document.querySelectorAll(".pin-toggle--topic").forEach(wireTopicPinButton);
 renderTopics();
+refreshPinnedTopics();
+
+window.addEventListener("pageshow", (event) => {
+  if (event.persisted) refreshPinnedTopics();
+});
