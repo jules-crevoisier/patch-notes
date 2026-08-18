@@ -296,8 +296,7 @@ function renderSiteFooter({ isHome = false } = {}) {
 }
 
 function renderBodyScripts(extraScripts = []) {
-  const scripts = ['<script src="/cookie-consent.js"></script>', ...extraScripts];
-  return scripts.join("\n    ");
+  return extraScripts.join("\n    ");
 }
 
 function renderTopicPinButton(topic, { pinnedByMe = false } = {}) {
