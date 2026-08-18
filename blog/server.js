@@ -325,11 +325,12 @@ function renderTopicPostCard(post, topic) {
   </article>`;
 }
 
-function metaTags({ title, description, canonical, ogType = "website", ogImage = SITE_OG_IMAGE, publishedTime, modifiedTime, themeColor = "#0a7a68" }) {
+function metaTags({ title, description, canonical, ogType = "website", ogImage = SITE_OG_IMAGE, publishedTime, modifiedTime, themeColor = "#0a7a68", themeColorDark = "#3dbaa4" }) {
   const tags = [
     `<meta name="description" content="${escapeHtml(description)}" />`,
     `<meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1" />`,
-    `<meta name="theme-color" content="${escapeHtml(themeColor)}" />`,
+    `<meta name="theme-color" media="(prefers-color-scheme: light)" content="${escapeHtml(themeColor)}" />`,
+    `<meta name="theme-color" media="(prefers-color-scheme: dark)" content="${escapeHtml(themeColorDark)}" />`,
     `<link rel="canonical" href="${escapeHtml(canonical)}" />`,
     `<meta property="og:type" content="${escapeHtml(ogType)}" />`,
     `<meta property="og:locale" content="${escapeHtml(SITE_LOCALE)}" />`,
@@ -521,7 +522,7 @@ async function renderTopicPage(topicSlug) {
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>${escapeHtml(seoTitle)}</title>
-    ${metaTags({ title: seoTitle, description: seoDescription, canonical, themeColor: theme.accent })}
+    ${metaTags({ title: seoTitle, description: seoDescription, canonical, themeColor: theme.accent, themeColorDark: theme.dark.accent })}
     <link rel="alternate" type="application/rss+xml" title="${escapeHtml(SITE_NAME)} / ${escapeHtml(label)}" href="/${escapeHtml(topicSlug)}/feed.xml" />
     ${renderFaviconLinks()}
     ${topicThemes.renderTopicThemeStyleBlock()}
@@ -651,6 +652,7 @@ function renderRecapPage(post, topicSlug, topicLabelText) {
       publishedTime: createdAt.toISOString(),
       modifiedTime: createdAt.toISOString(),
       themeColor: theme.accent,
+      themeColorDark: theme.dark.accent,
     })}
     <meta name="news_keywords" content="${escapeHtml(keywords)}" />
     ${renderFaviconLinks()}
@@ -700,6 +702,7 @@ function renderArticleLandingPage({ article, post, topicSlug, topicLabelText }) 
   const description = truncate(article.snippet || `${article.title} — ${label} sur ${SITE_NAME}`);
   const pageTitle = `${article.title} | ${SITE_NAME}`;
   const recapUrl = `/${encodeURIComponent(topicSlug)}/recap/${encodeURIComponent(post.id)}`;
+  const theme = topicThemes.getTopicTheme(topicSlug);
 
   const newsArticleJsonLd = {
     "@context": "https://schema.org",
@@ -761,6 +764,8 @@ function renderArticleLandingPage({ article, post, topicSlug, topicLabelText }) 
       ogType: "article",
       publishedTime: publishedAt.toISOString(),
       modifiedTime: recapCreatedAt.toISOString(),
+      themeColor: theme.accent,
+      themeColorDark: theme.dark.accent,
     })}
     ${renderFaviconLinks()}
     ${topicThemes.renderTopicThemeStyleBlock()}

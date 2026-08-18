@@ -116,11 +116,21 @@ function renderTopics() {
 
 const wheel = document.querySelector(".topic-wheel");
 let selectedFamily = "";
+let spinning = false;
 
 function familyMap() {
   if (!wheel?.dataset.families) return {};
   try {
     return JSON.parse(wheel.dataset.families);
+  } catch {
+    return {};
+  }
+}
+
+function landingMap() {
+  if (!wheel?.dataset.landings) return {};
+  try {
+    return JSON.parse(wheel.dataset.landings);
   } catch {
     return {};
   }
@@ -132,12 +142,60 @@ function activeFamilySlugs() {
   return Array.isArray(slugs) ? slugs : null;
 }
 
+function prefersReducedMotion() {
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+function pickRandomFamilyId(ids, excludeId = "") {
+  const list = Array.isArray(ids) ? ids.filter(Boolean) : [];
+  const pool = list.filter((id) => id !== excludeId);
+  const source = pool.length ? pool : list;
+  if (!source.length) return "";
+  return source[Math.floor(Math.random() * source.length)];
+}
+
+function nextSpinAngle(current, landing, extraTurns = 6) {
+  const from = Number(current) || 0;
+  const normalized = ((from % 360) + 360) % 360;
+  const target = ((Number(landing) || 0) % 360 + 360) % 360;
+  let delta = (target - normalized + 360) % 360;
+  if (delta < 45) delta += 360;
+  return from + extraTurns * 360 + delta;
+}
+
+function currentDialRotation(dial) {
+  if (!dial) return 0;
+  const value = getComputedStyle(dial).transform;
+  if (!value || value === "none") return 0;
+  const match = value.match(/matrix3d\(([^)]+)\)/) || value.match(/matrix\(([^)]+)\)/);
+  if (!match) return 0;
+  const parts = match[1].split(",").map(Number);
+  if (value.includes("matrix3d")) {
+    return (Math.atan2(parts[1], parts[0]) * 180) / Math.PI;
+  }
+  return (Math.atan2(parts[1], parts[0]) * 180) / Math.PI;
+}
+
+function dialEl() {
+  return wheel?.querySelector(".topic-wheel__dial");
+}
+
+function clearSpinStyles() {
+  const dial = dialEl();
+  wheel?.classList.remove("is-spinning");
+  wheel?.removeAttribute("aria-busy");
+  if (!dial) return;
+  dial.style.animation = "";
+  dial.style.transition = "";
+  dial.style.transform = "";
+}
+
 function setWheelFamily(familyId) {
   selectedFamily = familyId || "";
   if (wheel) wheel.classList.toggle("is-filtered", Boolean(selectedFamily));
   document.querySelectorAll(".topic-wheel [data-family]").forEach((node) => {
-    const isActive = selectedFamily ? node.getAttribute("data-family") === selectedFamily : node.getAttribute("data-family") === "";
-    node.classList.toggle("is-active", Boolean(selectedFamily) && node.getAttribute("data-family") === selectedFamily);
+    const isActive = Boolean(selectedFamily) && node.getAttribute("data-family") === selectedFamily;
+    node.classList.toggle("is-active", isActive);
     if (node.getAttribute("role") === "button") {
       node.setAttribute("aria-pressed", isActive ? "true" : "false");
     }
@@ -145,21 +203,83 @@ function setWheelFamily(familyId) {
   renderTopics();
 }
 
+function spinRandom() {
+  if (!wheel || spinning) return;
+  const ids = Object.keys(familyMap());
+  const familyId = pickRandomFamilyId(ids, selectedFamily);
+  if (!familyId) return;
+  const landing = Number(landingMap()[familyId]) || 0;
+
+  if (prefersReducedMotion()) {
+    clearSpinStyles();
+    setWheelFamily(familyId);
+    return;
+  }
+
+  const dial = dialEl();
+  if (!dial) {
+    setWheelFamily(familyId);
+    return;
+  }
+
+  spinning = true;
+  wheel.classList.add("is-spinning");
+  wheel.setAttribute("aria-busy", "true");
+  const from = currentDialRotation(dial);
+  dial.style.animation = "none";
+  dial.style.transition = "none";
+  dial.style.transform = `rotate(${from}deg)`;
+  void dial.getBoundingClientRect();
+  const target = nextSpinAngle(from, landing, 6);
+  dial.style.transition = "transform 2.6s cubic-bezier(0.12, 0.72, 0.08, 1)";
+  dial.style.transform = `rotate(${target}deg)`;
+
+  let settled = false;
+  const finish = (event) => {
+    if (settled) return;
+    if (event?.propertyName && event.propertyName !== "transform") return;
+    settled = true;
+    spinning = false;
+    wheel.classList.remove("is-spinning");
+    wheel.removeAttribute("aria-busy");
+    dial.style.animation = "none";
+    dial.style.transition = "none";
+    setWheelFamily(familyId);
+  };
+  dial.addEventListener("transitionend", finish);
+  window.setTimeout(finish, 2800);
+}
+
 function wireWheel() {
   if (!wheel) return;
   wheel.addEventListener("click", (event) => {
+    if (event.target.closest("[data-random]")) {
+      spinRandom();
+      return;
+    }
+    if (spinning) return;
     const target = event.target.closest("[data-family]");
     if (!target || !wheel.contains(target)) return;
     const familyId = target.getAttribute("data-family") || "";
-    setWheelFamily(familyId && familyId === selectedFamily ? "" : familyId);
+    const next = familyId && familyId === selectedFamily ? "" : familyId;
+    if (!next) clearSpinStyles();
+    setWheelFamily(next);
   });
   wheel.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" && event.key !== " ") return;
+    if (event.target.closest("[data-random]")) {
+      event.preventDefault();
+      spinRandom();
+      return;
+    }
+    if (spinning) return;
     const target = event.target.closest("[data-family]");
     if (!target) return;
     event.preventDefault();
     const familyId = target.getAttribute("data-family") || "";
-    setWheelFamily(familyId && familyId === selectedFamily ? "" : familyId);
+    const next = familyId && familyId === selectedFamily ? "" : familyId;
+    if (!next) clearSpinStyles();
+    setWheelFamily(next);
   });
 }
 
