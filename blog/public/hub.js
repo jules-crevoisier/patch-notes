@@ -117,6 +117,7 @@ function renderTopics() {
 const wheel = document.querySelector(".topic-wheel");
 let selectedFamily = "";
 let spinning = false;
+let spinToken = 0;
 
 function familyMap() {
   if (!wheel?.dataset.families) return {};
@@ -190,6 +191,22 @@ function clearSpinStyles() {
   dial.style.transform = "";
 }
 
+function clearWheelFilter() {
+  spinToken += 1;
+  spinning = false;
+  clearSpinStyles();
+  setWheelFamily("");
+}
+
+function isKeepFilterTarget(node) {
+  if (!node || typeof node.closest !== "function") return false;
+  return Boolean(
+    node.closest(".topic-wheel") ||
+    node.closest(".topic-grid") ||
+    node.closest(".search-box")
+  );
+}
+
 function setWheelFamily(familyId) {
   selectedFamily = familyId || "";
   if (wheel) wheel.classList.toggle("is-filtered", Boolean(selectedFamily));
@@ -222,6 +239,8 @@ function spinRandom() {
     return;
   }
 
+  const token = spinToken + 1;
+  spinToken = token;
   spinning = true;
   wheel.classList.add("is-spinning");
   wheel.setAttribute("aria-busy", "true");
@@ -236,7 +255,7 @@ function spinRandom() {
 
   let settled = false;
   const finish = (event) => {
-    if (settled) return;
+    if (settled || token !== spinToken) return;
     if (event?.propertyName && event.propertyName !== "transform") return;
     settled = true;
     spinning = false;
@@ -283,8 +302,22 @@ function wireWheel() {
   });
 }
 
+function wireWheelDismiss() {
+  document.addEventListener("click", (event) => {
+    if (!selectedFamily && !spinning) return;
+    if (isKeepFilterTarget(event.target)) return;
+    clearWheelFilter();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    if (!selectedFamily && !spinning) return;
+    clearWheelFilter();
+  });
+}
+
 if (search) search.addEventListener("input", renderTopics);
 wireWheel();
+wireWheelDismiss();
 document.querySelectorAll(".pin-toggle--topic").forEach(wireTopicPinButton);
 renderTopics();
 refreshPinnedTopics();
