@@ -1,15 +1,15 @@
 /**
  * Client-side pin persistence for homepage topic favorites.
- *
- * Layers (most reliable first for UI):
- *   1. localStorage — survives back/forward and bfcache instantly
- *   2. visitor cookie + X-Visitor-Id — stable server identity (not IP-only)
- *   3. server API — source of truth when reachable
+ * Ne s'active qu'après consentement cookies (cf. cookie-consent.js).
  */
 (function initPinStore(global) {
   const VISITOR_KEY = "patch-notes.visitorId";
   const PINS_KEY = "patch-notes.topicPins.v1";
   const COOKIE_NAME = "pn_vid";
+
+  function hasPreferenceConsent() {
+    return Boolean(global.PatchNotesCookieConsent?.hasPreferenceConsent?.());
+  }
 
   function createVisitorId() {
     if (global.crypto?.randomUUID) return global.crypto.randomUUID().replace(/-/g, "");
@@ -25,7 +25,18 @@
     document.cookie = `${name}=${encodeURIComponent(value)}; Max-Age=31536000; Path=/; SameSite=Lax`;
   }
 
+  function clearPreferenceStorage() {
+    try {
+      global.localStorage.removeItem(VISITOR_KEY);
+      global.localStorage.removeItem(PINS_KEY);
+    } catch {
+      // ignore
+    }
+    document.cookie = `${COOKIE_NAME}=; Max-Age=0; Path=/; SameSite=Lax`;
+  }
+
   function getVisitorId() {
+    if (!hasPreferenceConsent()) return "";
     let id = "";
     try {
       id = global.localStorage.getItem(VISITOR_KEY) || readCookie(COOKIE_NAME);
@@ -43,6 +54,7 @@
   }
 
   function readLocalPins() {
+    if (!hasPreferenceConsent()) return [];
     try {
       const raw = global.localStorage.getItem(PINS_KEY);
       const parsed = JSON.parse(raw || "[]");
@@ -53,6 +65,7 @@
   }
 
   function writeLocalPins(slugs) {
+    if (!hasPreferenceConsent()) return [];
     const unique = [...new Set(slugs.filter(Boolean))];
     try {
       global.localStorage.setItem(PINS_KEY, JSON.stringify(unique));
@@ -67,6 +80,7 @@
   }
 
   function setLocalPin(slug, pinned) {
+    if (!hasPreferenceConsent()) return [];
     const next = new Set(readLocalPins());
     if (pinned) next.add(slug);
     else next.delete(slug);
@@ -74,10 +88,10 @@
   }
 
   function pinHeaders(extra = {}) {
-    return {
-      ...extra,
-      "X-Visitor-Id": getVisitorId(),
-    };
+    const headers = { ...extra };
+    const visitorId = getVisitorId();
+    if (visitorId) headers["X-Visitor-Id"] = visitorId;
+    return headers;
   }
 
   async function fetchServerPins() {
@@ -91,6 +105,7 @@
   }
 
   async function syncPins() {
+    if (!hasPreferenceConsent()) return [];
     getVisitorId();
     const local = readLocalPins();
     try {
@@ -102,7 +117,20 @@
     }
   }
 
+  global.addEventListener("patch-notes:cookie-consent", (event) => {
+    if (event.detail?.status === "refused") {
+      clearPreferenceStorage();
+      return;
+    }
+    if (event.detail?.status === "accepted") {
+      syncPins().then((slugs) => {
+        global.dispatchEvent(new CustomEvent("patch-notes:pins-synced", { detail: { slugs } }));
+      });
+    }
+  });
+
   global.PatchNotesPinStore = {
+    hasPreferenceConsent,
     getVisitorId,
     readLocalPins,
     writeLocalPins,
@@ -111,5 +139,6 @@
     pinHeaders,
     fetchServerPins,
     syncPins,
+    clearPreferenceStorage,
   };
 })(window);

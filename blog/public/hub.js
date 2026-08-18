@@ -70,6 +70,11 @@ function wireTopicPinButton(button) {
     const topicSlug = button.dataset.topicSlug;
     if (!topicSlug || button.disabled) return;
 
+    if (pinStore && !pinStore.hasPreferenceConsent?.()) {
+      window.PatchNotesCookieConsent?.openBanner?.();
+      return;
+    }
+
     const nextPinned = button.getAttribute("aria-pressed") !== "true";
     if (pinStore) pinStore.setLocalPin(topicSlug, nextPinned);
     setTopicPinState(button, { pinned: nextPinned });
@@ -117,4 +122,12 @@ refreshPinnedTopics();
 
 window.addEventListener("pageshow", (event) => {
   if (event.persisted) refreshPinnedTopics();
+});
+
+window.addEventListener("patch-notes:cookie-consent", (event) => {
+  if (event.detail?.status === "accepted") refreshPinnedTopics();
+});
+
+window.addEventListener("patch-notes:pins-synced", (event) => {
+  if (Array.isArray(event.detail?.slugs)) applyPinnedSlugs(event.detail.slugs);
 });

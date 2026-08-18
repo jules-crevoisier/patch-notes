@@ -295,6 +295,11 @@ function renderSiteFooter({ isHome = false } = {}) {
   return `<footer class="site-footer">\n      ${links.join("\n      ")}\n    </footer>`;
 }
 
+function renderBodyScripts(extraScripts = []) {
+  const scripts = ['<script src="/cookie-consent.js"></script>', ...extraScripts];
+  return scripts.join("\n    ");
+}
+
 function renderTopicPinButton(topic, { pinnedByMe = false } = {}) {
   const label = topic.label || topicLabel(topic.slug);
   const action = pinnedByMe ? "Retirer" : "Épingler";
@@ -442,8 +447,10 @@ async function renderHubPage({ ipHash } = {}) {
 
     ${renderSiteFooter({ isHome: true })}
 
-    <script src="/pin-store.js"></script>
-    <script src="/hub.js"></script>
+    ${renderBodyScripts([
+      '<script src="/pin-store.js"></script>',
+      '<script src="/hub.js"></script>',
+    ])}
   </body>
 </html>
 `;
@@ -557,8 +564,8 @@ async function renderTopicPage(topicSlug) {
       </article>
     </template>
 
-    <script src="/app.js"></script>
     ${renderSiteFooter()}
+    ${renderBodyScripts(['<script src="/app.js"></script>'])}
   </body>
 </html>
 `;
@@ -667,8 +674,8 @@ function renderRecapPage(post, topicSlug, topicLabelText) {
       </section>
     </main>
 
-    <script src="/detail.js" defer></script>
     ${renderSiteFooter()}
+    ${renderBodyScripts(['<script src="/detail.js" defer></script>'])}
   </body>
 </html>
 `;
@@ -777,6 +784,7 @@ function renderArticleLandingPage({ article, post, topicSlug, topicLabelText }) 
     </main>
 
     ${renderSiteFooter()}
+    ${renderBodyScripts()}
   </body>
 </html>
 `;
@@ -851,8 +859,7 @@ async function renderSuggestPage(ipHash) {
     </main>
 
     ${renderSiteFooter()}
-
-    <script src="/suggerer.js"></script>
+    ${renderBodyScripts(['<script src="/suggerer.js"></script>'])}
   </body>
 </html>`;
 }
