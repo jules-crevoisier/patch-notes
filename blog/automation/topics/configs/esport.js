@@ -33,7 +33,14 @@ module.exports = {
     'build guide', 'codes ', 'camos', 'weapon prestige', 'night market', 'far far west',
     'tier list', 'patch notes', 'notes de patch', 'carte interactive', 'soluce',
     'planning des patchs', 'boutique officielle', 'nos partenaires', 'nos ambassadeurs',
-    'maillot ', 'tapis de souris', 't-shirt', 'accueil - mandatory'
+    'maillot ', 'tapis de souris', 't-shirt', 'accueil - mandatory',
+    'sélectionneur', 'selectionneur', 'ligue 1', 'ligue 2', 'ligue des champions',
+    'transfert ', 'mercato ', 'football', 'diables rouges', 'équipe de france'
+  ],
+
+  urlBlockPatterns: [
+    /lequipe\.fr\/football/i,
+    /lequipe\.fr\/[^/]+\/football/i,
   ],
 
   maxAgeDays: { google: 3, rss: 7 },
@@ -50,7 +57,8 @@ module.exports = {
     { name: 'Millenium',              region: 'fr',   method: 'google', siteDomain: 'millenium.org',    max: 5 },
     { name: 'Team-aAa',               region: 'fr',   method: 'rss',    url: 'https://www.team-aaa.com/rss/full.xml', max: 7 },
     { name: 'Breakflip',              region: 'fr',   method: 'google', siteDomain: 'breakflip.com',    max: 5 },
-    { name: "L'Équipe Esport",        region: 'fr',   method: 'google', siteDomain: 'lequipe.fr',       max: 4 },
+    { name: "L'Équipe Esport",        region: 'fr',   method: 'google', siteDomain: 'lequipe.fr',       max: 4,
+      urlAllowPatterns: [/lequipe\.fr\/esport/i, /lequipe\.fr\/[^/]+\/esport/i] },
     { name: 'Dot Esports',            region: 'intl', method: 'rss',    url: 'https://dotesports.com/feed', max: 6 },
     { name: 'Dexerto Esports',        region: 'intl', method: 'rss',    url: 'https://www.dexerto.com/esports/feed/', max: 6 },
     { name: 'Esports Insider',        region: 'intl', method: 'rss',    url: 'https://esportsinsider.com/feed', max: 6 },

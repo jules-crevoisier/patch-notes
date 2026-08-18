@@ -49,8 +49,8 @@ services:
       # Le pipeline de récap (cron interne blog/automation/) appelle Gemini
       # directement - plus de service n8n séparé à alimenter.
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-flash-latest}
-      GEMINI_MAX_PER_MINUTE: ${GEMINI_MAX_PER_MINUTE:-5}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.1-flash-lite}
+      GEMINI_MAX_PER_MINUTE: ${GEMINI_MAX_PER_MINUTE:-15}
       GEMINI_MAX_WAIT_SECONDS: ${GEMINI_MAX_WAIT_SECONDS:-1800}
 
 volumes:

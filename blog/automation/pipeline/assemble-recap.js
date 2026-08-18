@@ -104,12 +104,35 @@ function recapSlot(date) {
   return "Soir";
 }
 
+// Acronymes courts (lec, lck, vct…) doivent matcher des mots entiers, pas des
+// sous-chaînes dans "sélectionneur" ou "collection".
+function keywordMatches(haystack, term) {
+  const needle = String(term || "").toLowerCase().trim();
+  if (!needle) return false;
+  if (needle.includes(" ") || needle.length >= 5) {
+    return haystack.includes(needle);
+  }
+  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:^|[^a-z0-9])${escaped}(?:[^a-z0-9]|$)`, "i").test(haystack);
+}
+
+function passesUrlRules(article, topic, source) {
+  const url = String(article.url || "");
+  const blockPatterns = [...(topic.urlBlockPatterns || []), ...(source?.urlBlockPatterns || [])];
+  if (blockPatterns.some((pattern) => pattern.test(url))) return false;
+  const allowPatterns = source?.urlAllowPatterns || [];
+  if (allowPatterns.length > 0) {
+    return allowPatterns.some((pattern) => pattern.test(url));
+  }
+  return true;
+}
+
 // On vérifie le filtre positif uniquement sur le contenu (titre + extrait),
 // PAS sur le nom de la source : sinon n'importe quel article publié par
 // "Dot Esports" ou "Esports Insider" passe automatiquement parce que le mot
 // "esports" est dans le nom du média. Le négatif, lui, peut regarder large
 // (titre + extrait + source) pour éviter une source-pourriel ciblée.
-function isTopicArticle(article, topic) {
+function isTopicArticle(article, topic, source) {
   const haystack = `${article.title} ${article.snippet}`.toLowerCase();
   const haystackWide = `${haystack} ${article.source || ""}`.toLowerCase();
   const publishedAt = new Date(article.publishedAt);
@@ -117,9 +140,10 @@ function isTopicArticle(article, topic) {
     const maxAgeDays = article.method === "google" ? topic.maxAgeDays.google : topic.maxAgeDays.rss;
     if (Date.now() - publishedAt.getTime() > maxAgeDays * 24 * 60 * 60 * 1000) return false;
   }
-  if ((topic.negativeKeywords || []).some((term) => haystackWide.includes(term))) return false;
+  if (!passesUrlRules(article, topic, source)) return false;
+  if ((topic.negativeKeywords || []).some((term) => keywordMatches(haystackWide, term))) return false;
   if (!Array.isArray(topic.positiveKeywords) || topic.positiveKeywords.length === 0) return true;
-  return topic.positiveKeywords.some((term) => haystack.includes(term));
+  return topic.positiveKeywords.some((term) => keywordMatches(haystack, term));
 }
 
 function parseItems(xml, source, topic) {
@@ -143,7 +167,7 @@ function parseItems(xml, source, topic) {
         snippet: decodeHtml(pickRaw(block, "description") || pickRaw(block, "content:encoded") || pickRaw(block, "summary")),
       };
     })
-    .filter((article) => article.title && article.url && isTopicArticle(article, topic))
+    .filter((article) => article.title && article.url && isTopicArticle(article, topic, source))
     .slice(0, source.max || 10);
 }
 

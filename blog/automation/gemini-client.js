@@ -27,7 +27,7 @@ async function callGemini({ apiKey, model, request, timeoutMs = DEFAULT_TIMEOUT_
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const url = `${API_BASE}/${encodeURIComponent(model || "gemini-2.5-flash")}:generateContent?key=${encodeURIComponent(apiKey || "")}`;
+    const url = `${API_BASE}/${encodeURIComponent(model || "gemini-3.1-flash-lite")}:generateContent?key=${encodeURIComponent(apiKey || "")}`;
     const response = await fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
