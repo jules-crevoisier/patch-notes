@@ -38,6 +38,7 @@ COPY --chown=blog:blog seo-urls.js ./
 COPY --chown=blog:blog pins.js ./
 COPY --chown=blog:blog pinned-shelf.js ./
 COPY --chown=blog:blog suggestions.js ./
+COPY --chown=blog:blog topic-themes.js ./
 COPY --chown=blog:blog prisma ./prisma
 COPY --chown=blog:blog public ./public
 COPY --chown=blog:blog automation ./automation

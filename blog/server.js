@@ -25,6 +25,7 @@ const db = require("./db");
 const automation = require("./automation/scheduler");
 const pins = require("./pins");
 const seoUrls = require("./seo-urls");
+const topicThemes = require("./topic-themes");
 
 const PORT = Number(process.env.PORT || 3001);
 const BLOG_SECRET = process.env.BLOG_SECRET || "dev-change-me";
@@ -324,11 +325,11 @@ function renderTopicPostCard(post, topic) {
   </article>`;
 }
 
-function metaTags({ title, description, canonical, ogType = "website", ogImage = SITE_OG_IMAGE, publishedTime, modifiedTime }) {
+function metaTags({ title, description, canonical, ogType = "website", ogImage = SITE_OG_IMAGE, publishedTime, modifiedTime, themeColor = "#0a7a68" }) {
   const tags = [
     `<meta name="description" content="${escapeHtml(description)}" />`,
     `<meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1" />`,
-    `<meta name="theme-color" content="#0a7a68" />`,
+    `<meta name="theme-color" content="${escapeHtml(themeColor)}" />`,
     `<link rel="canonical" href="${escapeHtml(canonical)}" />`,
     `<meta property="og:type" content="${escapeHtml(ogType)}" />`,
     `<meta property="og:locale" content="${escapeHtml(SITE_LOCALE)}" />`,
@@ -373,7 +374,7 @@ async function renderHubPage({ ipHash } = {}) {
         ? truncate(topic.description, 120)
         : `${topic.post_count || 0} recap${topic.post_count > 1 ? "s" : ""} publié${topic.post_count > 1 ? "s" : ""}.`;
       const pinnedByMe = pinnedSlugs.has(topic.slug);
-      return `<div class="topic-card-shell${pinnedByMe ? " is-pinned" : ""}">
+      return `<div class="topic-card-shell${pinnedByMe ? " is-pinned" : ""}" data-topic="${escapeHtml(topic.slug)}">
       <a class="topic-card" href="/${escapeHtml(topic.slug)}" data-search="${escapeHtml(`${topic.slug} ${label}`)}">
       <span>${topic.post_count > 0 ? "Actif" : "Bientôt"}</span>
       <strong>${escapeHtml(label)}</strong>
@@ -415,6 +416,7 @@ async function renderHubPage({ ipHash } = {}) {
     <title>${escapeHtml(SITE_NAME)} - hub d'actualité multi-sujets</title>
     ${metaTags({ title: `${SITE_NAME} - hub d'actualité multi-sujets`, description: truncate(description), canonical })}
     ${renderFaviconLinks()}
+    ${topicThemes.renderTopicThemeStyleBlock()}
     <link rel="stylesheet" href="/styles.css" />
     <script type="application/ld+json">${escapeJson(websiteJsonLd)}</script>
     <script type="application/ld+json">${escapeJson(itemListJsonLd)}</script>
@@ -434,10 +436,13 @@ async function renderHubPage({ ipHash } = {}) {
         <p class="hub-pin-hint">Épinglez vos sujets favoris pour les retrouver en haut de la liste.</p>
       </section>
 
-      <label class="search-box hub-search">
-        <span>Rechercher un sujet</span>
-        <input id="topic-search" type="search" placeholder="esport, gaming, tech..." />
-      </label>
+      <div class="hub-tools">
+        ${topicThemes.renderTopicWheel(listed)}
+        <label class="search-box hub-search">
+          <span>Rechercher un sujet</span>
+          <input id="topic-search" type="search" placeholder="Esport, gaming, tech IA, F1…" autocomplete="off" />
+        </label>
+      </div>
 
       <section class="topic-grid" id="topics" aria-label="Sujets">
         ${cards || '<p class="empty">Aucun sujet pour le moment.</p>'}
@@ -508,22 +513,25 @@ async function renderTopicPage(topicSlug) {
     ],
   };
 
+  const theme = topicThemes.getTopicTheme(topicSlug);
+
   return `<!doctype html>
 <html lang="fr">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>${escapeHtml(seoTitle)}</title>
-    ${metaTags({ title: seoTitle, description: seoDescription, canonical })}
+    ${metaTags({ title: seoTitle, description: seoDescription, canonical, themeColor: theme.accent })}
     <link rel="alternate" type="application/rss+xml" title="${escapeHtml(SITE_NAME)} / ${escapeHtml(label)}" href="/${escapeHtml(topicSlug)}/feed.xml" />
     ${renderFaviconLinks()}
+    ${topicThemes.renderTopicThemeStyleBlock()}
     <link rel="stylesheet" href="/styles.css" />
     <script type="application/ld+json">${escapeJson(collectionJsonLd)}</script>
     <script type="application/ld+json">${escapeJson(itemListJsonLd)}</script>
     <script type="application/ld+json">${escapeJson(breadcrumbJsonLd)}</script>
   </head>
-  <body>
-    <header class="site-header">
+  <body${topicThemes.topicBodyClass(topicSlug)}>
+    <header class="site-header site-header--topic">
       <div>
         <p class="eyebrow"><a class="subtle-link" href="/">${escapeHtml(SITE_NAME)}</a> / ${escapeHtml(label)}</p>
         <h1>${escapeHtml(label)}</h1>
@@ -533,8 +541,8 @@ async function renderTopicPage(topicSlug) {
 
     <main class="posts">
       <label class="search-box">
-        <span>Recherche globale</span>
-        <input id="search" type="search" placeholder="Jeu, source, date, titre..." />
+        <span>Filtrer les récaps</span>
+        <input id="search" type="search" placeholder="Titre, source, date, mot-clé…" autocomplete="off" />
       </label>
       <section id="posts">${postsHtml}</section>
       <div id="load-more-sentinel" class="load-more-sentinel" data-has-more="${page.hasMore ? "true" : "false"}">
@@ -627,6 +635,8 @@ function renderRecapPage(post, topicSlug, topicLabelText) {
     ],
   };
 
+  const theme = topicThemes.getTopicTheme(topicSlug);
+
   return `<!doctype html>
 <html lang="fr">
   <head>
@@ -640,15 +650,17 @@ function renderRecapPage(post, topicSlug, topicLabelText) {
       ogType: "article",
       publishedTime: createdAt.toISOString(),
       modifiedTime: createdAt.toISOString(),
+      themeColor: theme.accent,
     })}
     <meta name="news_keywords" content="${escapeHtml(keywords)}" />
     ${renderFaviconLinks()}
+    ${topicThemes.renderTopicThemeStyleBlock()}
     <link rel="stylesheet" href="/styles.css" />
     <script type="application/ld+json">${escapeJson(newsArticleJsonLd)}</script>
     <script type="application/ld+json">${escapeJson(breadcrumbJsonLd)}</script>
   </head>
-  <body>
-    <header class="site-header">
+  <body${topicThemes.topicBodyClass(topicSlug)}>
+    <header class="site-header site-header--topic">
       <div>
         <p class="eyebrow"><a class="subtle-link" href="/">${escapeHtml(SITE_NAME)}</a> / <a class="subtle-link" href="/${escapeHtml(topicSlug)}">${escapeHtml(label)}</a> / recap</p>
         <h1>${escapeHtml(post.title)}</h1>
@@ -659,7 +671,7 @@ function renderRecapPage(post, topicSlug, topicLabelText) {
     <main class="posts">
       <label class="search-box">
         <span>Rechercher dans ce recap</span>
-        <input id="search" type="search" placeholder="Jeu, source, titre, date..." />
+        <input id="search" type="search" placeholder="Source, titre, mot-clé…" autocomplete="off" />
       </label>
       <section id="detail">
         <article class="post">
@@ -751,6 +763,7 @@ function renderArticleLandingPage({ article, post, topicSlug, topicLabelText }) 
       modifiedTime: recapCreatedAt.toISOString(),
     })}
     ${renderFaviconLinks()}
+    ${topicThemes.renderTopicThemeStyleBlock()}
     <link rel="stylesheet" href="/styles.css" />
     <script type="application/ld+json">${escapeJson(newsArticleJsonLd)}</script>
     <script type="application/ld+json">${escapeJson(breadcrumbJsonLd)}</script>
@@ -821,6 +834,7 @@ async function renderSuggestPage(ipHash) {
     <title>Suggérer un sujet - ${escapeHtml(SITE_NAME)}</title>
     <meta name="description" content="Proposez un sujet à suivre sur ${escapeHtml(SITE_NAME)} et soutenez les idées des autres visiteurs." />
     ${renderFaviconLinks()}
+    ${topicThemes.renderTopicThemeStyleBlock()}
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>

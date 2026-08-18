@@ -96,21 +96,75 @@ function wireTopicPinButton(button) {
 }
 
 function renderTopics() {
-  const query = normalize(search.value.trim());
+  const query = search ? normalize(search.value.trim()) : "";
+  const familySlugs = activeFamilySlugs();
   let visible = 0;
 
   for (const shell of topicShells) {
     const card = shell.querySelector(".topic-card");
     const text = normalize(`${card?.textContent || ""} ${card?.dataset.search || ""}`);
-    const match = !query || text.includes(query);
+    const slug = shell.getAttribute("data-topic") || "";
+    const textMatch = !query || text.includes(query);
+    const familyMatch = !familySlugs || familySlugs.includes(slug);
+    const match = textMatch && familyMatch;
     shell.hidden = !match;
     if (match) visible += 1;
   }
 
-  statusEl.textContent = `${visible} sujet${visible > 1 ? "s" : ""}`;
+  if (statusEl) statusEl.textContent = `${visible} sujet${visible > 1 ? "s" : ""}`;
 }
 
-search.addEventListener("input", renderTopics);
+const wheel = document.querySelector(".topic-wheel");
+let selectedFamily = "";
+
+function familyMap() {
+  if (!wheel?.dataset.families) return {};
+  try {
+    return JSON.parse(wheel.dataset.families);
+  } catch {
+    return {};
+  }
+}
+
+function activeFamilySlugs() {
+  if (!selectedFamily) return null;
+  const slugs = familyMap()[selectedFamily];
+  return Array.isArray(slugs) ? slugs : null;
+}
+
+function setWheelFamily(familyId) {
+  selectedFamily = familyId || "";
+  if (wheel) wheel.classList.toggle("is-filtered", Boolean(selectedFamily));
+  document.querySelectorAll(".topic-wheel [data-family]").forEach((node) => {
+    const isActive = selectedFamily ? node.getAttribute("data-family") === selectedFamily : node.getAttribute("data-family") === "";
+    node.classList.toggle("is-active", Boolean(selectedFamily) && node.getAttribute("data-family") === selectedFamily);
+    if (node.getAttribute("role") === "button") {
+      node.setAttribute("aria-pressed", isActive ? "true" : "false");
+    }
+  });
+  renderTopics();
+}
+
+function wireWheel() {
+  if (!wheel) return;
+  wheel.addEventListener("click", (event) => {
+    const target = event.target.closest("[data-family]");
+    if (!target || !wheel.contains(target)) return;
+    const familyId = target.getAttribute("data-family") || "";
+    setWheelFamily(familyId && familyId === selectedFamily ? "" : familyId);
+  });
+  wheel.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    const target = event.target.closest("[data-family]");
+    if (!target) return;
+    event.preventDefault();
+    const familyId = target.getAttribute("data-family") || "";
+    setWheelFamily(familyId && familyId === selectedFamily ? "" : familyId);
+  });
+}
+
+if (search) search.addEventListener("input", renderTopics);
+wireWheel();
 document.querySelectorAll(".pin-toggle--topic").forEach(wireTopicPinButton);
 renderTopics();
 refreshPinnedTopics();
