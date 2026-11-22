@@ -9,6 +9,9 @@ services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    # Réglages pour un petit serveur partagé (4 Go) : cache et connexions réduits.
+    command: postgres -c shared_buffers=64MB -c max_connections=30 -c work_mem=4MB
+    mem_limit: 256m
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -28,10 +31,11 @@ services:
         max-file: "5"
 
   blog:
-    build:
-      context: ./blog
-      dockerfile: Dockerfile
+    # Image construite par GitHub Actions (.github/workflows/deploy.yml) et publiée sur ghcr.io.
+    image: ${BLOG_IMAGE:-ghcr.io/jules-crevoisier/patch-notes-blog}:${BLOG_TAG:-latest}
+    pull_policy: always
     restart: unless-stopped
+    mem_limit: 384m
     depends_on:
       postgres:
         condition: service_healthy
